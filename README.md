@@ -33,8 +33,6 @@ allow MIDI devices (and the microphone, the first time you record): choose Allow
   trimmed), or chop a long sound across the pads (by detected hits or 16 equal slices).
 - **Save audio**: render a pattern (×1 to ×8) or the whole song to MP3 or WAV, faster than
   real time. Beats save in the app and export to `.thump.json` (with your own sounds inside).
-- **Pad lights** (experimental, in Settings): echoes hits back to the pad. `tools/test-lights`
-  sends four light patterns to the pad to see which ones (if any) it responds to.
 
 Esc stops all sound. Space plays and stops. Ctrl+Z undoes.
 
@@ -53,7 +51,6 @@ still work.
 - `sources/`: Hydrogen kit archives used by the build (Hydrogen itself is not needed)
 - `vendor/lamejs.js`: MP3 encoder (LGPL, `vendor/lamejs-LICENSE.txt`)
 - `tools/cdp.mjs`: headless Chromium test driver
-- `tools/test-lights`: pad light test (needs `aseqsend` from alsa-utils)
 
 ## Build and test
 

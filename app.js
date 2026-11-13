@@ -76,8 +76,6 @@
     get(id) { return this.run('readonly', s => s.get(id)); },
     put(rec) { return this.run('readwrite', s => s.put(rec)); },
   };
-  const settings = Object.assign({ lights: false }, store.get('settings', {}));
-  const saveSettings = () => store.set('settings', settings);
 
   // ---------------------------------------------------------------- library
   // kinds: smp (built-in sample), syn (built-in synth), usr (your file or mic),
@@ -630,7 +628,7 @@
     if (h.repeat) repeats.delete(h.repeat);
   }
 
-  // ---------------------------------------------------------------- MIDI in and pad lights
+  // ---------------------------------------------------------------- MIDI in
   let midi = null, usbPad = false;
   const lastMsg = new Map();
   const isPad = n => /smc|sinco|pad/i.test(n), isBt = n => /bluetooth/i.test(n);
@@ -671,26 +669,6 @@
     lastMsg.set(k, e.timeStamp);
     const i = mod(d1 - 36, 16);
     on ? padDown(i, d2, 'm') : padUp(i, 'm');
-  }
-  function padOutputs() {
-    if (!midi) return [];
-    return [...midi.outputs.values()].filter(o => o.state === 'connected' && isPad(o.name) && !(usbPad && isBt(o.name)));
-  }
-  // Experimental: echo hits back to the pad, which some controllers use to light pads.
-  function light(i, vel, ms = 140) {
-    if (!settings.lights || i < 0) return;
-    const now = performance.now();
-    for (const o of padOutputs()) {
-      try { o.send([0x99, 36 + i, clamp(vel | 0, 1, 127)]); o.send([0x89, 36 + i, 0], now + ms); } catch { }
-    }
-  }
-  async function testLights() {
-    const outs = padOutputs();
-    if (!outs.length) return toast('No pad output found. Is the pad connected?');
-    for (let i = 0; i < 16; i++) { for (const o of outs) o.send([0x99, 36 + i, 127]); await sleep(90); }
-    await sleep(600);
-    for (let i = 0; i < 16; i++) for (const o of outs) o.send([0x89, 36 + i, 0]);
-    toast('Sent a light test to the pad');
   }
   function setStatus(kind, text, onclick) {
     const s = $('#status');
@@ -757,7 +735,6 @@
   function flashPad(i, vel) {
     const pad = padEls[i];
     if (!pad) return;
-    light(i, vel);
     const v = Math.max(0.3, vel / 127), c = pad.style.getPropertyValue('--c') || '#888';
     pad.querySelector('.flash').animate([{ opacity: v }, { opacity: 0 }], { duration: 420, easing: 'cubic-bezier(.2,.7,.3,1)' });
     pad.animate([
@@ -1612,16 +1589,10 @@
 
   // ---------------------------------------------------------------- settings and help
   function settingsDialog() {
-    const lightsBtn = el('button', { class: 'btn toggle' });
-    const paintLights = () => { lightsBtn.setAttribute('aria-pressed', settings.lights); lightsBtn.textContent = settings.lights ? 'On' : 'Off'; };
-    lightsBtn.onclick = () => { settings.lights = !settings.lights; saveSettings(); paintLights(); };
-    paintLights();
     const ins = midi ? [...midi.inputs.values()].filter(i => i.state === 'connected').map(i => i.name) : [];
     const lat = Math.round(((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000);
     openModal(el('h2', {}, 'Settings'),
       el('div', { class: 'settings-list' },
-        el('div', { class: 'item' }, el('div', {}, el('b', {}, 'Pad lights (experimental)'), el('p', {}, 'Sends each hit back to the pad so it can light up. Not every pad supports this.')),
-          el('div', { class: 'row', style: 'margin:0' }, el('button', { class: 'btn sm', onclick: testLights }, 'Test'), lightsBtn)),
         el('div', { class: 'item' }, el('div', {}, el('b', {}, 'Sound delay'), el('p', {}, 'Time from a hit to the speakers, before Bluetooth delay.')), el('span', { class: 'mono' }, lat ? lat + ' ms' : 'unknown')),
         el('div', { class: 'item' }, el('div', {}, el('b', {}, 'MIDI inputs'), el('p', {}, ins.length ? ins.join(', ') : 'None connected')))),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Done')));
