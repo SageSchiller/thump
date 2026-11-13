@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+node_modules/
+# Kits with no stated license stay local (see build_kits.py)
+sources/extra/
+kits-extra.js

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Start Thump in its own Chromium app window (separate profile, sound allowed to start without a click).
+dir="$(dirname "$(readlink -f "$0")")"
+
+# If the SMC-PAD is paired over Bluetooth, switched on but not connected, connect it.
+# Harmless when the pad is off or plugged in by USB.
+if command -v bluetoothctl >/dev/null; then
+  pad="$(bluetoothctl devices 2>/dev/null | awk '/SMC-PAD/ {print $2; exit}')"
+  if [ -n "$pad" ] && ! bluetoothctl info "$pad" 2>/dev/null | grep -q "Connected: yes"; then
+    (timeout 20 bluetoothctl connect "$pad" >/dev/null 2>&1 &)
+  fi
+fi
+
+exec chromium \
+  --user-data-dir="$HOME/.local/share/thump/browser" \
+  --app="file://$dir/index.html" \
+  --class=thump \
+  --autoplay-policy=no-user-gesture-required \
+  --disable-background-timer-throttling \
+  --disable-renderer-backgrounding \
+  --disable-backgrounding-occluded-windows \
+  --no-first-run --no-default-browser-check \
+  --window-size=1400,900 \
+  "$@"

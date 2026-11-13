@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thump</title>
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand"><img src="icon.svg" alt="" width="26" height="26"><span>Thump</span></div>
+    <label class="field kit"><span>Kit</span><select id="kitSel" title="Load a ready-made set of sounds onto the pads"></select></label>
+    <div class="menu-wrap">
+      <button id="beatBtn" class="btn" aria-haspopup="true">Beats</button>
+      <div id="beatMenu" class="menu" hidden></div>
+    </div>
+    <button id="exportBtn" class="btn" title="Save your beat or song as an MP3 or WAV file">Save audio</button>
+    <div class="grow"></div>
+    <div id="status" class="chip" title="MIDI status"><i></i><span>Starting…</span></div>
+    <button id="settingsBtn" class="btn icon" title="Settings">⚙</button>
+    <button id="helpBtn" class="btn icon" title="How to use Thump">?</button>
+  </header>
+
+  <section class="transport">
+    <button id="playBtn" class="btn big" title="Play or stop (Space)"><svg viewBox="0 0 16 16"><path id="playIcon" d="M4 2.5v11l9-5.5z"/></svg><span>Play</span></button>
+    <button id="recBtn" class="btn big rec" title="Record what you play into the pattern"><i class="dot"></i><span>Rec</span></button>
+    <div class="group">
+      <span class="lbl">Length</span>
+      <div class="seg" id="barsSeg"></div>
+    </div>
+    <div class="group bpm">
+      <span class="lbl">Tempo</span>
+      <button id="bpmDown" class="btn sm" title="Slower">−</button>
+      <input id="bpmIn" type="number" min="60" max="200" step="1" title="Beats per minute">
+      <button id="bpmUp" class="btn sm" title="Faster">+</button>
+      <button id="tapBtn" class="btn sm" title="Tap this in time to set the tempo">Tap</button>
+    </div>
+    <button id="clickBtn" class="btn toggle" title="Metronome click while playing">Click</button>
+    <div class="group">
+      <span class="lbl">Snap</span>
+      <div class="seg" id="snapSeg"></div>
+    </div>
+    <div class="group">
+      <span class="lbl">Repeat</span>
+      <div class="seg" id="repSeg"></div>
+    </div>
+    <div class="grow"></div>
+    <button id="undoBtn" class="btn" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="clearBtn" class="btn" title="Remove every hit from this pattern">Clear</button>
+  </section>
+
+  <section class="songbar">
+    <span class="lbl">Patterns</span>
+    <div class="seg pats" id="patSeg"></div>
+    <button id="dupBtn" class="btn sm" title="Copy this pattern into the next empty slot, to make a variation">Copy to next</button>
+    <span class="divider"></span>
+    <button id="songBtn" class="btn sm toggle" title="Play the patterns in the song order below, instead of looping one">Play song</button>
+    <div class="song" id="songChips"></div>
+    <button id="songAdd" class="btn sm" title="Add the current pattern to the end of the song">+ Add</button>
+    <button id="songLoopBtn" class="btn sm toggle" title="Start the song again when it ends">Loop song</button>
+  </section>
+
+  <div class="progress" id="progress"><div id="playhead"></div></div>
+
+  <main>
+    <section class="pads-wrap">
+      <div id="notesBanner" class="banner" hidden></div>
+      <div id="muteBanner" class="banner mute" hidden>Mute mode: hit a pad to mute or unmute it in the loop. <span class="grow"></span><button class="btn sm" id="muteDone">Done</button></div>
+      <div id="grid" class="grid"></div>
+      <p class="hint">Hit harder for louder. Keyboard: <kbd>1</kbd>–<kbd>4</kbd> <kbd>Q</kbd>–<kbd>R</kbd> <kbd>A</kbd>–<kbd>F</kbd> <kbd>Z</kbd>–<kbd>V</kbd>, <kbd>Shift</kbd> for full force, <kbd>Esc</kbd> stops all sound.</p>
+    </section>
+
+    <aside class="panel" id="panel">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow" id="padTitle">Pad 1</div>
+          <div class="sound-name" id="soundName">Nothing</div>
+          <div class="sound-meta" id="soundMeta"></div>
+        </div>
+        <div class="head-btns">
+          <button id="changeBtn" class="btn primary">Change sound</button>
+          <button id="editWobBtn" class="btn sm" hidden>Edit wobble</button>
+        </div>
+      </div>
+      <div class="ctrls" id="padCtrls"></div>
+      <div class="toggles">
+        <button id="holdBtn" class="btn toggle" title="The sound keeps playing while you hold the pad and stops when you let go">Hold</button>
+        <button id="revBtn" class="btn toggle" title="Play the sound backwards">Reverse</button>
+        <label class="field" title="Pads in the same group cut each other off, like a closed hi-hat stopping an open one"><span>Cut group</span><select id="cutSel"></select></label>
+      </div>
+      <button id="notesBtn" class="btn wide" title="Play this sound at 16 different pitches, one per pad">Play this sound as notes on all pads</button>
+      <div class="notes-opts" id="notesOpts" hidden>
+        <label class="field"><span>Scale</span><select id="scaleSel"></select></label>
+        <label class="field"><span>Key</span><select id="rootSel"></select></label>
+      </div>
+
+      <h3>Master</h3>
+      <div class="ctrls" id="masterCtrls"></div>
+      <div class="pump-mode"><span class="lbl">Pump on</span><div class="seg" id="pumpSeg"></div></div>
+    </aside>
+  </main>
+
+  <section class="loop">
+    <div class="loop-head">
+      <h3 id="loopTitle">Pattern A</h3>
+      <span class="loop-info" id="loopInfo"></span>
+      <div class="grow"></div>
+      <button id="muteBtn" class="btn sm toggle" title="Hit pads to mute or unmute them in the loop (click a row name to mute it too)">Mute with pads</button>
+      <button id="rowsBtn" class="btn sm toggle" title="Show a row for every pad so you can click hits in">All pads</button>
+    </div>
+    <canvas id="loopCanvas" height="120"></canvas>
+  </section>
+</div>
+
+<aside id="browser" class="drawer" hidden>
+  <div class="drawer-head">
+    <div>
+      <div class="eyebrow">Choose a sound for</div>
+      <div class="sound-name" id="browserPad">Pad 1</div>
+    </div>
+    <button id="browserClose" class="btn icon" title="Close (Esc)">✕</button>
+  </div>
+  <input id="search" type="search" placeholder="Search sounds" autocomplete="off">
+  <div class="cats" id="cats"></div>
+  <div class="list" id="list"></div>
+  <div class="drawer-foot">
+    <div class="tools">
+      <button id="wobBtn" class="btn">Design a wobble</button>
+      <button id="micBtn" class="btn">Record with mic</button>
+      <button id="chopBtn" class="btn">Chop a long sound</button>
+      <button id="addFileBtn" class="btn">Add sound files</button>
+    </div>
+    <input id="fileIn" type="file" accept="audio/*" multiple hidden>
+    <input id="chopIn" type="file" accept="audio/*" hidden>
+    <p>Click a sound to put it on the pad. Hit the pad to hear it. You can also drop audio files onto a pad.</p>
+  </div>
+</aside>
+
+<div id="modal" class="modal" hidden><div class="modal-card" id="modalCard"></div></div>
+<div id="audioGate" class="gate" hidden><button class="btn primary big">Click to turn on sound</button></div>
+<input id="importIn" type="file" accept=".json,application/json" hidden>
+<pre id="selftest" hidden></pre>
+
+<script src="kits.js"></script>
+<script src="kits-extra.js" onerror="this.remove()"></script>
+<script src="synth.js"></script>
+<script src="presets.js"></script>
+<script src="vendor/lamejs.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
