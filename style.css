@@ -213,6 +213,12 @@ kbd { font: 11px var(--mono); padding: 1px 5px; border-radius: 3px; color: var(-
 .menu button:hover { background: #2a1a10; color: #fff; box-shadow: inset 2px 0 0 var(--accent); }
 .menu hr { border: 0; border-top: 1px solid #000; box-shadow: 0 1px 0 var(--edge); margin: 6px 4px; }
 .menu .sub { font: var(--label); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); padding: 8px 10px 3px; }
+.menu button.cur { background: #24170f; color: #fff; box-shadow: inset 2px 0 0 var(--accent); }
+/* the right-click menu on a pad: control groups in two columns so it fits on screen */
+.pad-menu { position: fixed; top: 0; left: 0; z-index: 60; width: 340px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; }
+.pad-menu button { padding: 6px 9px; font-size: 14px; }
+.pad-menu .pm-items { display: grid; grid-template-columns: 1fr 1fr; gap: 0 2px; }
+.pad-menu .sub { padding: 7px 9px 2px; }
 .menu .del { color: var(--ink-faint); }
 .menu .del:hover { color: var(--rec); }
 

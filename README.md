@@ -37,8 +37,8 @@ record: choose Allow.
   fill all four at once with a set of ready-made kits (Bass music, Industrial, Old school, Live
   drums) or with your own. Each preset keeps its pads as you left them. Following the pad needs
   the same link to the pad as the lights (USB, or Bluetooth once connected in Lights).
-- **Pad controls**: any pad can work a control instead of playing its sound (right-click it,
-  then Pad does): note repeat while held, repeat on/off and rate, latch (held sounds and
+- **Pad controls**: any pad can work a control instead of playing its sound (right-click it and
+  pick one from the menu, or hit it and use Pad does in the panel): note repeat while held, repeat on/off and rate, latch (held sounds and
   repeats keep going until you hit the pad again), stop all sound, presets 1 to 4 or next and
   previous, next and previous pattern, swing, tap tempo, metronome, play/stop, record, undo,
   and mute while held. Controls stay on their pads when you switch kits. On the pad, control
@@ -95,7 +95,7 @@ still work.
 `sources/extra/`, for kits from Hydrogen's library that don't state a license. Neither is in
 this repository; the app loads `kits-extra.js` if it is there.
 
-The self-test (213 checks) checks every preset sound exists, renders every synth sound and 15
+The self-test (215 checks) checks every preset sound exists, renders every synth sound and 15
 wobble designs, decodes every sample, and checks loop timing, swing, song order, pattern
 switching, old beat files, offline rendering, WAV and MP3 encoding, mic trimming, the
 chopper's hit detection, your kits and the four presets, pad controls, the spectrum's levels and auto gain, and the pad

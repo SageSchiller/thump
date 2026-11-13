@@ -79,7 +79,7 @@
       <div id="muteBanner" class="banner mute" hidden>Mute mode: hit a pad to mute or unmute it in the loop. <span class="grow"></span><button class="btn sm" id="muteDone">Done</button></div>
       <div id="presetKeys" class="presets" aria-label="Pad presets"></div>
       <div id="grid" class="grid"></div>
-      <p class="hint">Hit harder for louder. Keyboard: <kbd>1</kbd>–<kbd>4</kbd> <kbd>Q</kbd>–<kbd>R</kbd> <kbd>A</kbd>–<kbd>F</kbd> <kbd>Z</kbd>–<kbd>V</kbd>, <kbd>Shift</kbd> for full force, <kbd>Esc</kbd> stops all sound. Right-click a pad to pick it without playing it.</p>
+      <p class="hint">Hit harder for louder. Keyboard: <kbd>1</kbd>–<kbd>4</kbd> <kbd>Q</kbd>–<kbd>R</kbd> <kbd>A</kbd>–<kbd>F</kbd> <kbd>Z</kbd>–<kbd>V</kbd>, <kbd>Shift</kbd> for full force, <kbd>Esc</kbd> stops all sound. Right-click a pad to make it a control (repeat, latch, presets…).</p>
     </section>
 
     <aside class="panel" id="panel">
@@ -155,6 +155,7 @@
 </aside>
 
 <div id="modal" class="modal" hidden><div class="modal-card" id="modalCard"></div></div>
+<div id="padMenu" class="menu pad-menu" role="menu" hidden></div>
 <div id="audioGate" class="gate" hidden><div class="power"><img src="icon.svg" alt="" width="64" height="64"><span class="word">Thump</span><small>TH-16 · Percussion engine</small><button class="btn primary big">Click to turn on sound</button></div></div>
 <input id="importIn" type="file" accept=".json,application/json" hidden>
 <pre id="selftest" hidden></pre>

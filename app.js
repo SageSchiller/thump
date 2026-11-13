@@ -732,6 +732,20 @@
       default: return [false, CTL[id].hold ? 'Hold' : 'Control'];
     }
   }
+  // Right-click on a pad: what it does, as a menu right where you clicked.
+  function padMenu(i, x, y) {
+    select(i);
+    const menu = $('#padMenu'), cur = controls[i] || '', info = state.pads[i].sound && library.get(state.pads[i].sound);
+    const item = (id, name) => el('button', { class: id === cur ? 'cur' : null, onclick: () => { menu.hidden = true; setControl(i, id); } }, name);
+    menu.replaceChildren(
+      el('div', { class: 'sub' }, `Pad ${i + 1} does`),
+      item('', 'Play its sound' + (info ? `: ${info.name}` : '')),
+      ...CONTROLS.map(([label, list]) => el('div', { class: 'pm-group' }, el('div', { class: 'sub' }, label), el('div', { class: 'pm-items' }, ...list.map(([id, name]) => item(id, name))))));
+    menu.hidden = false;
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    menu.style.left = Math.max(8, Math.min(x, innerWidth - w - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, innerHeight - h - 8)) + 'px';
+  }
   // Keeps the control pads (and their lights) up to date; cheap enough to run every frame.
   let ctlSig = '';
   function ctlRefresh() {
@@ -773,6 +787,7 @@
     if (controls[i]) {
       if (held.has(key)) return;
       held.set(key, { ctl: controls[i], grid: i });
+      if (!state.notes && sel !== i) select(i);
       padEls[i] && padEls[i].classList.add('held');
       flashPad(i, 90);
       ctlDown(controls[i]);
@@ -885,8 +900,8 @@
         e.preventDefault(); pad.setPointerCapture(e.pointerId); padDown(i, 105, 'p');
       });
       const up = () => padUp(i, 'p');
-      // Right-click picks a pad to change without playing it (or working its control).
-      pad.addEventListener('contextmenu', e => { e.preventDefault(); if (!state.notes) select(i); });
+      // Right-click opens a menu of what the pad does, without playing it.
+      pad.addEventListener('contextmenu', e => { e.preventDefault(); if (!state.notes) padMenu(i, e.clientX, e.clientY); });
       pad.addEventListener('pointerup', up);
       pad.addEventListener('pointercancel', up);
       pad.addEventListener('dragover', e => { e.preventDefault(); pad.classList.add('drop'); });
@@ -1285,7 +1300,7 @@
         for (const k of ['empty', 'note', 'muted']) pad.classList.remove(k);
         pad.classList.toggle('sel', !notes && i === sel);
         pad.querySelector('.name').textContent = c.name;
-        pad.querySelector('.badges').replaceChildren(el('b', { class: 'fn', title: 'This pad works a control. Right-click it, then change Pad does.' }, 'CTRL'));
+        pad.querySelector('.badges').replaceChildren(el('b', { class: 'fn', title: 'This pad works a control. Right-click it to change what it does.' }, 'CTRL'));
         continue;
       }
       pad.classList.remove('on');
@@ -2665,7 +2680,7 @@
         el('li', {}, 'Record with mic: bang on metal for industrial hits. Chop a long sound: put a vocal or loop across the pads.'),
         el('li', {}, 'Lights (top bar) sets your pad\'s colors: sound colors, your own, or the pad\'s own, with flashes as pads play. Works over USB or Bluetooth.'),
         el('li', {}, 'Your pad has four presets (hold pad 13 to 16 while you switch it on), and Thump puts a kit on each. Kits (top bar) chooses them and saves your own kits.'),
-        el('li', {}, 'Any pad can work a control instead of a sound: right-click it, then choose under Pad does. Note repeat, latch, presets, patterns, swing, tap tempo, play and record.')),
+        el('li', {}, 'Any pad can work a control instead of a sound: right-click it and pick one (or hit it and use Pad does in the panel). Note repeat, latch, presets, patterns, swing, tap tempo, play and record.')),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Got it')));
   }
   let modalCleanup = null;
@@ -2704,8 +2719,8 @@
       if (e.ctrlKey || e.metaKey) { if (e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); } return; }
       if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) togglePlay(); return; }
       if (e.code === 'Escape') {
-        const open = !$('#browser').hidden || !$('#modal').hidden || !$('#beatMenu').hidden;
-        closeBrowser(); closeModal(); $('#beatMenu').hidden = true;
+        const open = !$('#browser').hidden || !$('#modal').hidden || !$('#beatMenu').hidden || !$('#padMenu').hidden;
+        closeBrowser(); closeModal(); $('#beatMenu').hidden = true; $('#padMenu').hidden = true;
         if (!open) silence();
         return;
       }
@@ -2716,6 +2731,9 @@
     });
     addEventListener('keyup', e => { const i = KEYS.indexOf(e.code); if (i >= 0) padUp(i, 'k'); });
     addEventListener('blur', () => { for (const [k, h] of [...held]) padUp(h.grid, k[0]); });
+    const pm = $('#padMenu');
+    document.addEventListener('pointerdown', e => { if (!pm.hidden && !pm.contains(e.target)) pm.hidden = true; }, true);
+    addEventListener('resize', () => { pm.hidden = true; });
     document.addEventListener('click', e => { const b = e.target.closest('button'); if (b) b.blur(); });
     // Give the keyboard back to the pads after a dropdown or the tempo box is used.
     document.addEventListener('change', e => { if (e.target.matches('select, input[type=number]')) e.target.blur(); });
@@ -3032,6 +3050,13 @@
       setControl(15, 'click'); const c0 = state.click;
       padDown(15, 100, 'k'); padUp(15, 'k');
       ok(state.click === !c0, 'controls: Metronome turns the click on and off');
+      select(0); padDown(15, 100, 'k'); padUp(15, 'k');
+      ok(sel === 15 && state.click === c0, 'controls: hitting a control pad picks it in the panel too');
+      padEls[2].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }));
+      const menuOpen = !$('#padMenu').hidden, tapBtn = [...$('#padMenu').querySelectorAll('button')].find(b => b.textContent === 'Tap tempo');
+      tapBtn && tapBtn.click();
+      ok(menuOpen && controls[2] === 'tap' && $('#padMenu').hidden && sel === 2 && padEls[2].classList.contains('ctl'), 'controls: right-click opens a menu that sets what the pad does');
+      setControl(2, null);
 
       select(15);
       ok($('#ctlSel').value === 'click' && $('#soundCtrls').hidden && !$('#ctlHelp').hidden && $('#soundName').textContent === 'Metronome', 'controls: the panel shows what a control pad does');
