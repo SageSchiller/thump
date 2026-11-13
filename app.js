@@ -228,7 +228,7 @@
     M.hp.connect(M.send).connect(M.verb).connect(M.comp);
     M.comp.connect(M.out).connect(ac.destination);
     M.click.connect(M.out);
-    M.an = ac.createAnalyser(); M.an.fftSize = 2048; M.an.smoothingTimeConstant = 0.7; M.an.minDecibels = -90; M.an.maxDecibels = -6;
+    M.an = ac.createAnalyser(); M.an.fftSize = 2048; M.an.smoothingTimeConstant = 0; // the display does its own smoothing
     M.out.connect(M.an);
     M.verb.buffer = impulse(ac);
     const E = { ac, M, voices: new Set(), ducks: [], pump: { amount: 0, mode: 'kick', spb: 0.5 } };
@@ -334,6 +334,7 @@
     const info = library.get(id);
     return Object.assign({}, PAD_DEFAULT, { sound: info ? id : null, hold: !!(info && info.hold) }, opts);
   };
+  const cleanPad = p => Object.assign({}, PAD_DEFAULT, p, { sound: library.has(p && p.sound) ? p.sound : null });
   const emptyPattern = (bars = 2) => ({ bars, events: [] });
   function freshState() {
     const pre = PRESETS[0];
@@ -346,6 +347,13 @@
   }
   let state = freshState();
   let sel = 0, muteMode = false;
+  // Your kits: 16 pads saved under a name, next to the ready-made kits. id -> { name, bpm, pads }
+  const userKits = store.get('kits', {});
+  // The pad's four presets (Shift + pads 13-16 on the Pocket) each hold a kit. slots[n] is
+  // { kit: { id, name }, pads } as you left it, so edits stay with their preset.
+  const padPresets = Object.assign({ follow: true, slot: 0, slots: null }, store.get('presets', {}));
+  const savePresets = () => store.set('presets', padPresets);
+  const currentSlot = () => ({ kit: { id: state.kit.id, name: state.kit.name }, pads: state.pads.map(p => Object.assign({}, p)) });
   const undoStack = [];
   const pat = () => state.patterns[state.pat];
   const spb = () => 60 / state.bpm;
@@ -353,7 +361,10 @@
   let saveTimer = null;
   function dirty() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => store.set('session', beatData()), 400);
+    saveTimer = setTimeout(() => {
+      store.set('session', beatData());
+      if (padPresets.slots) { padPresets.slots[padPresets.slot] = currentSlot(); savePresets(); }
+    }, 400);
   }
   const cleanEvents = evs => evs.map(({ pad, beat, vel, semis, dur }) => ({ pad, beat, vel, semis, dur }));
   function beatData() {
@@ -374,7 +385,7 @@
     if (!d || !Array.isArray(d.pads) || d.pads.length !== 16) return s;
     s.name = d.name || '';
     s.kit = d.kit || { id: 'custom', name: 'My kit' };
-    s.pads = d.pads.map(p => Object.assign({}, PAD_DEFAULT, p, { sound: library.has(p.sound) ? p.sound : null }));
+    s.pads = d.pads.map(cleanPad);
     s.bpm = clamp(+d.bpm || 140, 60, 200);
     s.snap = SNAPS.some(x => x[0] === d.snap) ? d.snap : 0.25;
     s.click = d.click !== false;
@@ -814,10 +825,12 @@
     return link;
   }
 
-  function makeLights({ enabled, key, onState = () => { } }) {
+  // enabled: the lights are on. session: keep talking to the pad (lights on, or following its
+  // presets). onPreset(n): the pad is on preset n (0-3), told after every read of its settings.
+  function makeLights({ enabled, session = enabled, key, onState = () => { }, onPreset = () => { } }) {
     let link = null, ready = false, running = false, wake = null, waiter = null, failures = 0, lastPoll = 0;
     let glob = null, preset = 0, group = 2, model = '', status = 'nopad', saveTimer = 0;
-    let recs = null; // the current preset's 112 pad records, as read at the last unlock
+    let mem = null; // all four presets' settings, as read at the last unlock
     let notes = new Map(); // (channel << 8 | note) -> record numbers in the current preset
     const want = new Map(), flashT = [];
     let pads = Array.from({ length: 16 }, () => ({ rgb: null, level: 0, own: false }));
@@ -862,33 +875,45 @@
       if (!/pocket/i.test(model)) return null; // only the Pocket's memory layout is known
       const g = await readRegion(4, 0, 12);
       if (!g) return false;
-      const mem = new Uint8Array(POCKET.size);
-      for (let a = 0; a < mem.length; a += 1009) {
-        const d = await readRegion(5, a, Math.min(1009, mem.length - a));
+      const m = new Uint8Array(POCKET.size);
+      for (let a = 0; a < m.length; a += 1009) {
+        const d = await readRegion(5, a, Math.min(1009, m.length - a));
         if (!d) return false;
-        mem.set(d, a);
+        m.set(d, a);
       }
       const p = g[10] < 4 ? g[10] : 0, base = p * POCKET.preset;
-      for (let r = 0; r < POCKET.records; r++) if (mem[base + r * POCKET.rec] !== 0 || mem[base + r * POCKET.rec + 8] !== 0xFF) return null;
-      glob = g; preset = p; recs = mem.slice(base, base + POCKET.records * POCKET.rec);
+      for (let pr = 0; pr < 4; pr++) for (let r = 0; r < POCKET.records; r++) {
+        const o = pr * POCKET.preset + r * POCKET.rec;
+        if (m[o] !== 0 || m[o + 8] !== 0xFF) return null;
+      }
+      glob = g; preset = p; mem = m;
       notes = new Map();
       for (let r = 0; r < POCKET.records; r++) {
-        const o = base + r * POCKET.rec, k = (mem[o + 1] & 15) << 8 | mem[o + 2];
+        const o = base + r * POCKET.rec, k = (m[o + 1] & 15) << 8 | m[o + 2];
         notes.set(k, [...(notes.get(k) || []), r]);
-        const a = o + POCKET.rgb, cur = [...mem.slice(a, a + 3)];
+      }
+      for (let pr = 0; pr < 4; pr++) for (let r = 0; r < POCKET.records; r++) {
+        const a = pr * POCKET.preset + r * POCKET.rec + POCKET.rgb, cur = [...m.slice(a, a + 3)];
         // A colour Thump didn't put there is the pad's own (first run, or the pad was switched off since).
         if (!orig.has(a) || !sameRgb(cur, shown.get(a))) orig.set(a, cur);
         shown.set(a, cur);
       }
       persist();
+      onPreset(preset);
       return true;
     }
-    function paintAll() { for (let i = 0; i < 16; i++) if (!flashT[i]) want.set(addr(i), idleOf(i)); }
+    // Light the 16 pads on show. Anything Thump lit on another bank or preset goes back to
+    // the pad's own colour, so only what you can see is ever Thump's.
+    function paintAll() {
+      const visible = new Set();
+      for (let i = 0; i < 16; i++) { visible.add(addr(i)); if (!flashT[i]) want.set(addr(i), idleOf(i)); }
+      for (const [a, c] of orig) if (!visible.has(a) && !sameRgb(shown.get(a), c)) want.set(a, c);
+    }
     async function run() {
       if (running) return;
       running = true;
       try {
-        while (link && (enabled() || want.size)) {
+        while (link && (session() || want.size)) {
           if (!ready) {
             setStatus('connecting');
             const ok = await unlock();
@@ -897,6 +922,16 @@
             ready = true; failures = 0; lastPoll = performance.now();
             if (enabled()) { want.clear(); paintAll(); }
             setStatus(enabled() ? 'on' : 'off');
+            continue;
+          }
+          // Read the global block every 300 ms (700 ms while busy writing): it keeps the session
+          // open and shows a preset or bank change on the pad. No answer: the session lapsed.
+          if (session() && performance.now() - lastPoll > (want.size ? 700 : 300)) {
+            const g = await readRegion(4, 0, 12);
+            lastPoll = performance.now();
+            // Byte 10 is the preset (Shift + a preset pad), told at once; the rest waits for the re-read.
+            if (g && g[10] !== glob[10] && g[10] < 4) { preset = g[10]; onPreset(preset); }
+            if (!g || g.some((b, i) => b !== glob[i])) ready = false;
             continue;
           }
           if (want.size) {
@@ -908,14 +943,7 @@
             shown.set(a, rgb); persist();
             continue;
           }
-          if (!enabled()) break;
-          if (performance.now() - lastPoll > 450) {
-            const g = await readRegion(4, 0, 12);
-            lastPoll = performance.now();
-            // No answer: the session lapsed. A different answer: preset or bank changed on the pad.
-            if (!g || g.some((b, i) => b !== glob[i])) ready = false;
-            continue;
-          }
+          if (!session()) break;
           await new Promise(r => { wake = r; setTimeout(r, 120); });
           wake = null;
         }
@@ -937,8 +965,10 @@
         if (waiter) { clearTimeout(waiter.timer); waiter.res(null); waiter = null; }
         if (l) l.onPacket = receive;
         setStatus(l ? (enabled() ? 'connecting' : 'off') : 'nopad');
-        if (l && enabled()) kick();
+        if (l && session()) kick();
       },
+      // Something changed whether the session is wanted (lights or preset following turned on).
+      poke() { if (link && session()) kick(); },
       onSysex(bytes) { if (link && link.kind === 'usb') receive(SMC.parse(SMC.fromMidi(bytes))); },
       // pads: 16 entries of { base: '#rrggbb' or null, level: 0-1, own: use the pad's own colour }
       setPads(list) {
@@ -973,23 +1003,29 @@
       // The page is closing and can't wait for answers. The pad drops messages that arrive
       // while it is busy, so the pad's own colours go back as whole records in one message.
       // shown is left alone, so if this is lost the next start still knows the originals.
+      // The preset on show goes first: normally it is the only one Thump has lit.
       restoreNow() {
-        if (!link || !ready || !recs) return false;
-        const base = preset * POCKET.preset, at = r => base + r * POCKET.rec + POCKET.rgb, touched = [];
-        for (let r = 0; r < POCKET.records; r++) if (orig.has(at(r)) && !sameRgb(shown.get(at(r)), orig.get(at(r)))) touched.push(r);
-        if (!touched.length) return false;
-        const lo = touched[0], hi = touched[touched.length - 1], block = recs.slice(lo * POCKET.rec, (hi + 1) * POCKET.rec);
-        for (let r = lo; r <= hi; r++) if (orig.has(at(r))) block.set(orig.get(at(r)), (r - lo) * POCKET.rec + POCKET.rgb);
-        const step = (link.kind === 'bt' ? 18 : 38) * POCKET.rec; // a Bluetooth packet must fit one 512-byte write
-        for (let o = 0; o < block.length; o += step) {
-          try { link.send(SMC.write(5, base + lo * POCKET.rec + o, [...block.slice(o, o + step)])); } catch { }
+        if (!link || !ready || !mem) return false;
+        let sent = false;
+        for (const pr of [preset, 0, 1, 2, 3].filter((x, i, a) => a.indexOf(x) === i)) {
+          const base = pr * POCKET.preset, at = r => base + r * POCKET.rec + POCKET.rgb, touched = [];
+          for (let r = 0; r < POCKET.records; r++) if (orig.has(at(r)) && !sameRgb(shown.get(at(r)), orig.get(at(r)))) touched.push(r);
+          if (!touched.length) continue;
+          const lo = touched[0], hi = touched[touched.length - 1], block = mem.slice(base + lo * POCKET.rec, base + (hi + 1) * POCKET.rec);
+          for (let r = lo; r <= hi; r++) if (orig.has(at(r))) block.set(orig.get(at(r)), (r - lo) * POCKET.rec + POCKET.rgb);
+          const step = (link.kind === 'bt' ? 18 : 38) * POCKET.rec; // a Bluetooth packet must fit one 512-byte write
+          for (let o = 0; o < block.length; o += step) {
+            try { link.send(SMC.write(5, base + lo * POCKET.rec + o, [...block.slice(o, o + step)])); } catch { }
+          }
+          sent = true;
         }
-        return true;
+        return sent;
       },
       get status() { return status; },
       get model() { return model; },
       get kind() { return link && link.kind; },
       get busy() { return running && (want.size > 0 || !ready); },
+      get linked() { return !!link && ready; },
       get where() { return { preset, group }; },
     };
   }
@@ -999,7 +1035,10 @@
   if (store.get('lights') == null && store.get('padLights', true) === false) lightOpts.on = false;
   const saveLights = () => store.set('lights', lightOpts);
   let sysexOk = false, btDevice = null, bt = null, btBusy = false, btError = '', lightPick = null;
-  const lights = makeLights({ enabled: () => lightOpts.on, key: 'padColors', onState: () => lightsUi() });
+  const lights = makeLights({
+    enabled: () => lightOpts.on, session: () => lightOpts.on || padPresets.follow, key: 'padColors',
+    onState: () => { lightsUi(); kitsUi(); renderPresetKeys(); }, onPreset: n => onPadPreset(n),
+  });
   let lightsUi = () => { };
   // USB when the pad is plugged in, Bluetooth otherwise.
   function chooseLink() {
@@ -1008,7 +1047,7 @@
     if (bt) return lights.attach(bt);
     lights.attach(null);
     const btPad = midi && [...midi.inputs.values()].some(i => i.state === 'connected' && isPad(i.name) && isBt(i.name));
-    if (lightOpts.on && btPad) connectBt(false);
+    if ((lightOpts.on || padPresets.follow) && btPad) connectBt(false);
   }
   async function connectBt(ask) {
     if (!navigator.bluetooth || btBusy) return;
@@ -1436,8 +1475,26 @@
   // ---------------------------------------------------------------- UI: display
   // The display shows the pattern, where the beat is, what the machine is doing, and a
   // spectrum of what comes out of the speakers, low notes on the left.
-  const LEVELS = 9, scopeBins = new Uint8Array(1024), scopePeaks = new Float32Array(64), shownText = {};
-  let scopeIdle = false;
+  // The spectrum adds up the power of every FFT bin in a band, so a hi-hat, which spreads
+  // its energy thinly over the wide treble bands, counts in full. It also tilts up 1.5 dB
+  // per octave around 1 kHz, because music gets quieter towards the treble. Bars jump up
+  // at once and fall back smoothly, so short hits show.
+  const SCOPE = { lo: 35, hi: 16000, floor: -60, top: -12, tilt: 1.5, fall: 2.4, hold: 0.45 };
+  function scopeLevels(db, rate, bands, out = new Float32Array(bands)) {
+    const hz = db.length / (rate / 2), span = SCOPE.hi / SCOPE.lo;
+    for (let i = 0; i < bands; i++) {
+      const f0 = SCOPE.lo * span ** (i / bands), f1 = SCOPE.lo * span ** ((i + 1) / bands);
+      const lo = Math.floor(f0 * hz), hi = Math.max(lo + 1, Math.ceil(f1 * hz));
+      let p = 0;
+      for (let k = lo; k < hi && k < db.length; k++) p += 10 ** (db[k] / 10);
+      const level = 10 * Math.log10(p || 1e-30) + SCOPE.tilt * Math.log2(Math.sqrt(f0 * f1) / 1000);
+      out[i] = clamp((level - SCOPE.floor) / (SCOPE.top - SCOPE.floor), 0, 1);
+    }
+    return out;
+  }
+  const LEVELS = 9, scopeDb = new Float32Array(1024), scopeNow = new Float32Array(64), scopeVals = new Float32Array(64);
+  const scopePeaks = new Float32Array(64), scopePeakT = new Float64Array(64), shownText = {};
+  let scopeIdle = false, scopeT = 0;
   const show = (id, text) => { if (shownText[id] !== text) { shownText[id] = text; $(id).textContent = text; } };
   const barsText = n => `${n} BAR${n > 1 ? 'S' : ''}`;
   function updateDisplay() {
@@ -1458,8 +1515,17 @@
   function drawScope() {
     const cv = $('#scope'), w = cv.clientWidth, h = cv.clientHeight, an = live.M.an;
     if (!w || !h) return;
-    an.getByteFrequencyData(scopeBins);
-    const quiet = scopeBins.every(v => v === 0) && scopePeaks.every(v => v === 0);
+    const now = performance.now(), dt = Math.min(0.1, (now - scopeT) / 1000), BANDS = clamp(Math.round(w / 8), 16, 64);
+    scopeT = now;
+    an.getFloatFrequencyData(scopeDb);
+    scopeLevels(scopeDb, ctx.sampleRate, BANDS, scopeNow);
+    let quiet = true;
+    for (let i = 0; i < BANDS; i++) {
+      scopeVals[i] = Math.max(scopeNow[i], scopeVals[i] - SCOPE.fall * dt);
+      if (scopeVals[i] >= scopePeaks[i]) { scopePeaks[i] = scopeVals[i]; scopePeakT[i] = now; }
+      else if (now - scopePeakT[i] > SCOPE.hold * 1000) scopePeaks[i] = Math.max(0, scopePeaks[i] - 0.9 * dt);
+      if (scopeVals[i] > 0 || scopePeaks[i] > 0) quiet = false;
+    }
     if (quiet && scopeIdle) return;
     scopeIdle = quiet;
     const dpr = devicePixelRatio || 1;
@@ -1467,14 +1533,9 @@
     const g = cv.getContext('2d');
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, h);
-    const BANDS = clamp(Math.round(w / 8), 16, 64), bins = an.frequencyBinCount, hz = bins / (ctx.sampleRate / 2), bw = w / BANDS, sh = h / LEVELS;
+    const bw = w / BANDS, sh = h / LEVELS;
     for (let i = 0; i < BANDS; i++) {
-      const lo = Math.floor(35 * Math.pow(16000 / 35, i / BANDS) * hz), hi = Math.max(lo + 1, Math.ceil(35 * Math.pow(16000 / 35, (i + 1) / BANDS) * hz));
-      let v = 0;
-      for (let k = lo; k < hi && k < bins; k++) v = Math.max(v, scopeBins[k]);
-      v /= 255;
-      scopePeaks[i] = v >= scopePeaks[i] ? v : Math.max(0, scopePeaks[i] - 0.015);
-      const lit = Math.round(v * LEVELS), peak = Math.min(LEVELS - 1, Math.floor(scopePeaks[i] * LEVELS));
+      const lit = Math.round(scopeVals[i] * LEVELS), peak = Math.min(LEVELS - 1, Math.floor(scopePeaks[i] * LEVELS));
       for (let r = 0; r < LEVELS; r++) {
         const on = r < lit || (r === peak && scopePeaks[i] > 0.06);
         g.fillStyle = !on ? '#6af7dc12' : r >= LEVELS - 2 ? '#ff8c42' : '#6af7dc';
@@ -1584,21 +1645,132 @@
   }
 
   // ---------------------------------------------------------------- kits and beats
+  const PRESET_SETS = [
+    ['Bass music', ['dubstep', 'riddim', 'audiophob', 'trap']],
+    ['Industrial', ['industrial', 'factory', 'electro', 'heavy']],
+    ['Old school', ['808', 'boxes', 'hiphop', 'electro']],
+    ['Live drums', ['rock', 'heavy', 'hands', 'hiphop']],
+  ];
+  const DEFAULT_SLOTS = ['dubstep', 'riddim', 'industrial', 'electro'];
+  const myKits = () => Object.entries(userKits).sort((a, b) => a[1].name.localeCompare(b[1].name));
+  function kitDef(id) {
+    const pre = PRESETS.find(p => p.id === id);
+    if (pre) return { id, name: pre.name, bpm: pre.bpm, pads: pre.pads.map(normPad) };
+    const k = userKits[id];
+    return k ? { id, name: k.name, bpm: k.bpm, pads: k.pads.map(cleanPad) } : null;
+  }
+  const slotFromKit = id => { const k = kitDef(id); return k && { kit: { id: k.id, name: k.name }, pads: k.pads }; };
+  // A kit picker: your kits, the ready-made ones, and the kit itself when it is edited or gone.
+  function kitOptions(kit) {
+    const known = !!kitDef(kit.id), mine = myKits();
+    return [
+      known ? null : el('option', { value: '' }, kit.name),
+      mine.length ? el('optgroup', { label: 'Your kits' }, ...mine.map(([id, k]) => el('option', { value: id }, k.name))) : null,
+      el('optgroup', { label: 'Ready-made kits' }, ...PRESETS.map(p => el('option', { value: p.id }, p.name))),
+    ].filter(Boolean);
+  }
   function renderKitSel() {
     const s = $('#kitSel');
-    s.replaceChildren(
-      el('optgroup', { label: 'Ready-made kits' }, ...PRESETS.map(p => el('option', { value: p.id }, p.name))),
-      state.kit.id === 'custom' ? el('option', { value: 'custom' }, state.kit.name) : null);
-    s.value = state.kit.id;
+    s.replaceChildren(...kitOptions(state.kit));
+    s.value = kitDef(state.kit.id) ? state.kit.id : '';
+    renderPresetKeys();
   }
-  function loadPreset(id) {
-    const pre = PRESETS.find(p => p.id === id);
-    if (!pre) return;
-    state.kit = { id: pre.id, name: pre.name };
-    state.pads = pre.pads.map(normPad);
+  // Load a kit onto the pads, which puts it on the preset you are on.
+  function loadKit(id) {
+    const k = kitDef(id);
+    if (!k) return;
+    state.kit = { id: k.id, name: k.name };
+    state.pads = k.pads;
     state.notes = null;
-    if (!state.patterns.some(p => p.events.length)) setBpm(pre.bpm);
+    if (!seq.playing && !state.patterns.some(p => p.events.length)) setBpm(k.bpm);
     preloadKit(); renderAll(); dirty();
+  }
+  function saveKit(name) {
+    const same = Object.keys(userKits).find(id => userKits[id].name.toLowerCase() === name.toLowerCase());
+    const id = same || newId('kit');
+    userKits[id] = { name, bpm: state.bpm, pads: state.pads.map(p => Object.assign({}, p)) };
+    if (!store.set('kits', userKits)) { toast('Could not save (storage full)'); return null; }
+    state.kit = { id, name };
+    renderAll(); dirty();
+    return id;
+  }
+  function renameKit(id, name) {
+    userKits[id].name = name;
+    store.set('kits', userKits);
+    for (const s of padPresets.slots) if (s.kit.id === id) s.kit.name = name;
+    if (state.kit.id === id) state.kit.name = name;
+    savePresets(); renderAll(); dirty();
+  }
+  function deleteKit(id) {
+    delete userKits[id];
+    store.set('kits', userKits);
+    // Presets keep the pads they had; the kit just isn't in the list any more.
+    for (const s of padPresets.slots) if (s.kit.id === id) s.kit.id = 'custom';
+    if (state.kit.id === id) state.kit.id = 'custom';
+    savePresets(); renderAll(); dirty();
+  }
+  function initPresets() {
+    const okSlot = x => x && x.kit && typeof x.kit.name === 'string' && Array.isArray(x.pads) && x.pads.length === 16;
+    if (!(Array.isArray(padPresets.slots) && padPresets.slots.length === 4 && padPresets.slots.every(okSlot))) padPresets.slots = DEFAULT_SLOTS.map(slotFromKit);
+    padPresets.slot = clamp(padPresets.slot | 0, 0, 3);
+    padPresets.slots[padPresets.slot] = currentSlot();
+    savePresets();
+  }
+  // Decode the other presets' sounds ahead, so switching is instant.
+  const preloadSlots = () => { for (const s of padPresets.slots) for (const p of s.pads) if (library.has(p.sound)) loadSound(p.sound); };
+  // Switch to preset n: the pads you leave stay with their preset, the tempo stays.
+  function goSlot(n) {
+    if (n === padPresets.slot || !padPresets.slots[n]) return;
+    padPresets.slots[padPresets.slot] = currentSlot();
+    padPresets.slot = n;
+    const s = padPresets.slots[n];
+    state.kit = { id: s.kit.id, name: s.kit.name };
+    state.pads = s.pads.map(cleanPad);
+    state.notes = null;
+    preloadKit(); renderAll(); dirty(); savePresets();
+  }
+  // Put a kit on preset n (the pads on show, if that is the preset you are on).
+  function assignSlot(n, id) {
+    if (n === padPresets.slot) return loadKit(id);
+    const s = slotFromKit(id);
+    if (!s) return;
+    padPresets.slots[n] = s;
+    savePresets(); renderPresetKeys(); preloadSlots();
+  }
+  function fillSlots(ids) {
+    ids.slice(0, 4).forEach((id, n) => { if (n !== padPresets.slot) { const s = slotFromKit(id); if (s) padPresets.slots[n] = s; } });
+    if (ids[padPresets.slot]) loadKit(ids[padPresets.slot]);
+    savePresets(); renderPresetKeys(); preloadSlots();
+  }
+  // The pad says which preset it is on. Follow it when it moves (and on first contact).
+  let padPreset = null;
+  function onPadPreset(n) {
+    const moved = n !== padPreset;
+    padPreset = n;
+    if (moved && padPresets.follow && n !== padPresets.slot) {
+      goSlot(n);
+      toast(`Preset ${n + 1}: ${state.kit.name}`);
+    }
+    renderPresetKeys(); kitsUi();
+  }
+  let presetBtns = [], kitsUi = () => { };
+  function buildPresetKeys() {
+    presetBtns = [0, 1, 2, 3].map(n => el('button', { class: 'pkey two', onclick: () => goSlot(n) },
+      el('span', { class: 'ptop' }, el('i'), el('b', {}, 'Preset ' + (n + 1))), el('span', { class: 'kname' })));
+    $('#presetKeys').replaceChildren(...presetBtns);
+  }
+  function renderPresetKeys() {
+    if (!presetBtns.length || !padPresets.slots) return;
+    presetBtns.forEach((b, n) => {
+      const s = padPresets.slots[n], on = n === padPresets.slot, name = on ? state.kit.name : s.kit.name;
+      // Short on the key: "Riddim / neuro (edited)" shows as "Riddim*".
+      const short = name.replace(/ \(edited\)$/, '').split(/ \/ | \(/)[0] + (/ \(edited\)$/.test(name) ? '*' : '');
+      const here = lights.linked && padPreset === n;
+      b.setAttribute('aria-pressed', String(on));
+      b.classList.toggle('here', here);
+      b.querySelector('.kname').textContent = short;
+      b.title = `Preset ${n + 1}: ${name}. On your pad: hold Shift and press pad ${13 + n}.` + (here ? ' Your pad is on this preset.' : '');
+    });
   }
   const beats = () => store.get('beats', {});
   function buildBeatMenu() {
@@ -2053,7 +2225,7 @@
     };
     const onBtn = el('button', { class: 'btn toggle', title: 'Turn the pad lights on or off', onclick: () => {
       lightOpts.on = !lightOpts.on;
-      if (lightOpts.on) chooseLink(); else lights.restore();
+      if (lightOpts.on) { chooseLink(); lights.poke(); } else lights.restore();
       changed();
     } });
     const status = el('p', { class: 'status' });
@@ -2115,9 +2287,104 @@
       el('div', { class: 'lights-head' }, el('h2', {}, 'Pad lights'), onBtn),
       el('div', { class: 'lights-status' }, status, connectBtn),
       el('div', { class: 'form' }, modeRow, el('div', { class: 'form-row' }, el('span', {}, 'Pads'), grid), mineRow, brightRow, flashRow, beatRow, whiteRow),
-      el('small', {}, 'Thump never saves anything to your pad: its own colors come back when Thump closes or the lights are off. Switch presets on the pad (hold SHIFT and press a pad) and the lights follow.'),
+      el('small', {}, 'Thump never saves anything to your pad: its own colors come back when Thump closes or the lights are off. Switch presets on the pad (hold Shift and press pad 13 to 16) and the lights follow.'),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Done')));
     modalCleanup = () => { lightsUi = () => { }; lightPick = null; };
+    paint();
+  }
+  // Kits: what is on each of the pad's presets, filling them, and your own kits.
+  function followText() {
+    if (!padPresets.follow) return 'Off: switching presets on your pad leaves the kit alone.';
+    if (lights.linked) return `On: your pad is on preset ${lights.where.preset + 1} (over ${lights.kind === 'bt' ? 'Bluetooth' : 'USB'}).`;
+    const btPad = midi && [...midi.inputs.values()].some(i => i.state === 'connected' && isPad(i.name) && isBt(i.name));
+    return {
+      connecting: 'Connecting to your pad…',
+      unsupported: `Only the SMC-PAD Pocket's presets can be followed (this is ${lights.model || 'another pad'}).`,
+      noreply: 'The pad didn\'t answer. Switch it off and on, or unplug it and plug it back in.',
+    }[lights.status] || (btError ? btError : btBusy ? 'Connecting over Bluetooth…'
+      : btPad ? (navigator.bluetooth ? 'Your pad is on Bluetooth. Press Connect so Thump can see its presets (once; Thump remembers it).' : 'Plug the pad in with USB so Thump can see its presets.')
+      : sysexOk ? 'Waiting for your pad: plug it in with USB, or switch it on.' : 'Thump needs permission to control MIDI devices. Close Thump, open it again and choose Allow.');
+  }
+  function nameDialog(title, text, value, okLabel, fn, back) {
+    const input = el('input', { type: 'text', value, maxlength: 40 }), note = el('small', {});
+    const check = () => { const n = input.value.trim().toLowerCase(), same = myKits().find(([, k]) => k.name.toLowerCase() === n); note.textContent = same && same[1].name !== value ? `This replaces your kit "${same[1].name}".` : ''; };
+    const ok = () => { const n = input.value.trim(); if (!n) return; fn(n); back ? back() : closeModal(); };
+    input.addEventListener('input', check);
+    input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') ok(); if (e.key === 'Escape') back ? back() : closeModal(); });
+    openModal(el('h2', {}, title), el('p', {}, text), input, note,
+      el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => back ? back() : closeModal() }, 'Cancel'), el('button', { class: 'btn primary', onclick: ok }, okLabel)));
+    check();
+    setTimeout(() => { input.focus(); input.select(); }, 30);
+  }
+  function saveKitDialog(back) {
+    const base = state.kit.name.replace(/ \(edited\)$/, ''), own = userKits[state.kit.id] || (myKits().find(([, k]) => k.name === base) || [])[1];
+    const name = own ? own.name : /^(my kit|chop:)/i.test(base) ? `My kit ${myKits().length + 1}` : /^my /i.test(base) ? base : `My ${base}`;
+    nameDialog('Save kit', 'Saves the 16 pads as they are now (sounds and settings), so you can put the kit on any preset.', name, 'Save kit',
+      n => { if (saveKit(n)) toast(`Saved kit "${n}"`); }, back);
+  }
+  function kitsDialog() {
+    const status = el('p', { class: 'status' });
+    const connectBtn = el('button', { class: 'btn sm', onclick: () => connectBt(true) }, 'Connect over Bluetooth');
+    const followBtn = el('button', { class: 'btn toggle', title: 'Load the kit on a preset when you switch to it on your pad', onclick: () => {
+      padPresets.follow = !padPresets.follow;
+      savePresets();
+      if (padPresets.follow) { chooseLink(); lights.poke(); if (lights.linked && padPreset != null && padPreset !== padPresets.slot) goSlot(padPreset); }
+      paint();
+    } });
+    const rows = [0, 1, 2, 3].map(n => {
+      const key = el('button', { class: 'pkey', title: 'Switch to this preset', onclick: () => { goSlot(n); paint(); } }, el('i'), el('b', {}, 'P' + (n + 1)));
+      const pick = el('select', { 'aria-label': `Kit on preset ${n + 1}`, onchange: e => { assignSlot(n, e.target.value); paint(); } });
+      const row = el('div', { class: 'slot-row' }, key, el('span', { class: 'slot-hint' }, `Shift + pad ${13 + n}`), pick);
+      row.paint = () => {
+        const kit = n === padPresets.slot ? state.kit : padPresets.slots[n].kit;
+        key.setAttribute('aria-pressed', String(n === padPresets.slot));
+        key.classList.toggle('here', lights.linked && padPreset === n);
+        pick.replaceChildren(...kitOptions(kit));
+        pick.value = kitDef(kit.id) ? kit.id : '';
+      };
+      return row;
+    });
+    const fill = ids => {
+      const edited = padPresets.slots.map((s, n) => n === padPresets.slot ? state.kit : s.kit).filter(k => !kitDef(k.id));
+      if (!edited.length) { fillSlots(ids); return paint(); }
+      confirmDialog(`Put new kits on all four presets? Your changes to ${edited.map(k => `"${k.name}"`).join(', ')} are lost unless you save them as a kit first.`, 'Fill presets', () => { fillSlots(ids); kitsDialog(); });
+    };
+    const fillRow = el('div', { class: 'fill-row' });
+    const mineBox = el('div', { class: 'kit-list' });
+    const paint = () => {
+      followBtn.setAttribute('aria-pressed', String(padPresets.follow));
+      followBtn.textContent = padPresets.follow ? 'Follow the pad: on' : 'Follow the pad: off';
+      status.textContent = followText();
+      const btPad = midi && [...midi.inputs.values()].some(i => i.state === 'connected' && isPad(i.name) && isBt(i.name));
+      connectBtn.hidden = !(padPresets.follow && btPad && navigator.bluetooth && lights.status === 'nopad' && !btBusy);
+      rows.forEach(r => r.paint());
+      const mine = myKits();
+      fillRow.replaceChildren(...[el('span', {}, 'Fill all four with'),
+        ...PRESET_SETS.map(([label, ids]) => el('button', { class: 'btn sm', title: ids.map(id => kitDef(id).name).join(', '), onclick: () => fill(ids) }, label)),
+        mine.length ? el('button', { class: 'btn sm', title: mine.slice(0, 4).map(([, k]) => k.name).join(', '), onclick: () => fill(mine.slice(0, 4).map(([id]) => id)) }, 'Your kits') : null].filter(Boolean));
+      mineBox.replaceChildren(...(mine.length ? mine.map(([id, k]) => el('div', { class: 'kit-item' + (state.kit.id === id ? ' on' : '') },
+        el('div', {}, el('b', {}, k.name), el('small', {}, `${k.pads.filter(p => p.sound).length} sounds · ${k.bpm} BPM`)),
+        el('button', { class: 'btn sm', title: `Put "${k.name}" on the pads (preset ${padPresets.slot + 1})`, onclick: () => { loadKit(id); paint(); } }, 'Load'),
+        el('button', { class: 'btn sm', onclick: () => nameDialog('Rename kit', `A new name for "${k.name}".`, k.name, 'Rename', x => renameKit(id, x), kitsDialog) }, 'Rename'),
+        el('button', { class: 'btn sm', onclick: () => confirmDialog(`Delete your kit "${k.name}"? Presets that use it keep their pads.`, 'Delete', () => { deleteKit(id); kitsDialog(); }) }, 'Delete')))
+        : [el('p', { class: 'empty' }, 'No kits of your own yet. Change the sounds on the pads (Change sound), then save them here.')]));
+    };
+    kitsUi = () => { status.textContent = followText(); rows.forEach(r => r.paint()); };
+    openModal(
+      el('div', { class: 'lights-head' }, el('h2', {}, 'Kits'), followBtn),
+      el('p', {}, 'Your pad has four presets: hold Shift and press pad 13, 14, 15 or 16. Each one holds a kit, and Thump switches to it when you do. The keys above the pads switch presets too.'),
+      el('div', { class: 'lights-status' }, status, connectBtn),
+      el('h3', {}, 'Pad presets'),
+      el('div', { class: 'slots' }, ...rows),
+      fillRow,
+      el('h3', {}, 'Your kits'),
+      mineBox,
+      el('div', { class: 'row' },
+        el('button', { class: 'btn', onclick: () => saveKitDialog(kitsDialog) }, 'Save the pads as a kit…'),
+        el('div', { class: 'grow' }),
+        el('button', { class: 'btn primary', onclick: closeModal }, 'Done')));
+    $('#modalCard').classList.add('wide');
+    modalCleanup = () => { kitsUi = () => { }; };
     paint();
   }
   function settingsDialog() {
@@ -2153,7 +2420,8 @@
         el('li', {}, 'Set Repeat to 1/16 and hold a hi-hat for rolls, or hold a wobble for stutters.'),
         el('li', {}, 'Sweep the master Filter down before a drop and back to Off when it hits.'),
         el('li', {}, 'Record with mic: bang on metal for industrial hits. Chop a long sound: put a vocal or loop across the pads.'),
-        el('li', {}, 'Lights (top bar) sets your pad\'s colors: sound colors, your own, or the pad\'s own, with flashes as pads play. Works over USB or Bluetooth.')),
+        el('li', {}, 'Lights (top bar) sets your pad\'s colors: sound colors, your own, or the pad\'s own, with flashes as pads play. Works over USB or Bluetooth.'),
+        el('li', {}, 'Your pad has four presets (hold Shift and press pad 13 to 16), and Thump puts a kit on each. Kits (top bar) chooses them and saves your own kits.')),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Got it')));
   }
   let modalCleanup = null;
@@ -2337,6 +2605,7 @@
       for (let pr = 0; pr < 4; pr++) for (let r = 0; r < 112; r++) mem.set([0, 9, 4 + r, 0, 127, 250, 250, 0, 255], pr * POCKET.preset + r * 26);
       mem[32 * 26 + 2] = 37; mem[33 * 26 + 2] = 36;
       let unlocked = false, on = true, biggest = 0;
+      const g4 = [0xA0, 0, 0x32, 2, 0, 0, 0, 0, 0, 0, 0, 0]; // the global block; byte 10 is the preset
       const L = makeLights({ enabled: () => on, key: null });
       const link = {
         kind: 'mock', id: 'mock',
@@ -2349,11 +2618,11 @@
           if (q.cmd === 0x11) reply(0x11, [...'SMC-PAD Pocket_004'].map(c => c.charCodeAt(0)).concat(Array(9).fill(0)));
           else if (q.cmd === 0x23) {
             if (d[0] === 5 && a + n >= POCKET.size) unlocked = true;
-            reply(0x23, [...d.slice(0, 8), ...(d[0] === 4 ? [0xA0, 0, 0x32, 2, 0, 0, 0, 0, 0, 0, 0, 0] : mem.slice(a, a + n))]);
+            reply(0x23, [...d.slice(0, 8), ...(d[0] === 4 ? g4 : mem.slice(a, a + n))]);
           } else if (q.cmd === 0x22) { if (unlocked) mem.set(d.slice(8, 8 + n), a); reply(0x00, [0]); }
         },
       };
-      const settle = async () => { await sleep(20); for (let t = 0; t < 300 && L.busy; t++) await sleep(10); };
+      const settle = async (x = L) => { await sleep(20); for (let t = 0; t < 300 && x.busy; t++) await sleep(10); };
       const at = (g, i) => [...mem.slice((g * 16 + i) * 26 + 5, (g * 16 + i) * 26 + 8)].join();
       L.attach(link);
       L.setPads(Array.from({ length: 16 }, (_, i) => ({ base: i < 15 ? '#ff5d5d' : null, level: 0.22 })));
@@ -2390,12 +2659,73 @@
       ok(at(2, 0) === '250,250,0' && at(3, 0) === '250,250,0' && at(2, 7) === '250,250,0', 'lights: closing Thump puts the pad\'s colours back in one message');
       L.attach(null); link.kind = 'bt'; L.attach(link); // a new session, now over Bluetooth
       teal(); await settle();
-      L.padFor(9, 36); await settle(); // bank 3 as well, so the restore spans 32 pads
-      ok(at(2, 1) !== '250,250,0' && at(3, 0) !== '250,250,0', 'lights: a new session finds the pad\'s colours again');
+      ok(at(3, 1) !== '250,250,0', 'lights: a new session finds the pad\'s colours again');
+      L.padFor(9, 36); await settle();
+      ok(at(2, 1) !== '250,250,0' && at(3, 1) === '250,250,0', 'lights: going back to bank 3 gives bank 4 its own colours back');
       biggest = 0; L.restoreNow();
       await sleep(20);
       ok(biggest > 0 && biggest <= 512 && at(2, 0) === '250,250,0' && at(3, 0) === '250,250,0', `lights: over Bluetooth the restore fits 512-byte writes (${biggest})`);
       L.attach(null);
+
+      // Following the pad's presets: Shift + pad 14 on the pad puts it on preset 2.
+      const seen = [], atp = (pr, g, i) => at(0, pr * POCKET.preset / POCKET.rec + g * 16 + i);
+      let lightsOn2 = true;
+      const L2 = makeLights({ enabled: () => lightsOn2, session: () => true, key: null, onPreset: n => seen.push(n) });
+      link.kind = 'mock'; L2.attach(link);
+      L2.setPads(Array.from({ length: 16 }, () => ({ base: '#2ee6c0', level: 0.22 })));
+      await settle(L2);
+      const tealRgb = atp(0, 2, 0);
+      ok(seen[0] === 0 && tealRgb !== '250,250,0', `presets: the pad reports preset 1 (${seen.join()})`);
+      g4[10] = 1; await sleep(450); await settle(L2);
+      ok(seen.includes(1) && L2.where.preset === 1, `presets: switching to preset 2 on the pad is seen (${seen.join()})`);
+      ok(atp(1, 2, 0) === tealRgb && atp(0, 2, 0) === '250,250,0', `presets: preset 2 lights up and preset 1 gets its own colours back (${atp(1, 2, 0)} / ${atp(0, 2, 0)})`);
+      L2.restoreNow(); await sleep(20);
+      ok(atp(1, 2, 0) === '250,250,0', 'presets: closing gives preset 2 its own colours back');
+      lightsOn2 = false; L2.restore(); await settle(L2);
+      seen.length = 0; g4[10] = 2; await sleep(450); await settle(L2);
+      ok(seen.includes(2) && L2.linked && L2.status === 'off' && atp(2, 2, 0) === '250,250,0', `presets: followed with the lights off, nothing lit (${seen.join()} ${L2.status})`);
+      g4[10] = 0; L2.attach(null);
+    }
+    {
+      // Your kits, and the kit on each of the pad's presets.
+      const keepKits = JSON.stringify(userKits), keepPresets = JSON.stringify(padPresets);
+      padPresets.follow = true;
+      fillSlots(['dubstep', 'riddim', 'industrial', 'electro']);
+      ok(state.kit.id === ['dubstep', 'riddim', 'industrial', 'electro'][padPresets.slot] && padPresets.slots.every((x, n) => n === padPresets.slot || x.kit.id === ['dubstep', 'riddim', 'industrial', 'electro'][n]), 'presets: fill puts four ready-made kits on the presets');
+      goSlot(0); goSlot(1);
+      ok(state.kit.id === 'riddim' && state.pads[0].sound === kitDef('riddim').pads[0].sound && presetBtns[1].getAttribute('aria-pressed') === 'true', 'presets: a preset key switches to its kit');
+      state.pads[2] = Object.assign({}, state.pads[2], { sound: 'syn:clang' }); state.kit = { id: 'custom', name: 'Riddim / neuro (edited)' };
+      goSlot(0); goSlot(1);
+      ok(state.pads[2].sound === 'syn:clang' && state.kit.name === 'Riddim / neuro (edited)', 'presets: each preset keeps the pads you left on it');
+      const id = saveKit('Selftest kit');
+      ok(id && userKits[id] && $('#kitSel').value === id && state.kit.id === id, 'kits: saving the pads makes a kit you can pick');
+      assignSlot(3, id); loadKit('electro'); loadKit(id);
+      ok(state.pads[2].sound === 'syn:clang' && padPresets.slots[3].kit.id === id && padPresets.slots[3].pads[2].sound === 'syn:clang', 'kits: your kit loads back and goes on another preset');
+      padPreset = null; onPadPreset(0);
+      ok(padPresets.slot === 0 && state.kit.id === 'dubstep', 'presets: Thump follows the pad to preset 1');
+      goSlot(2); onPadPreset(0);
+      ok(padPresets.slot === 2, 'presets: a preset picked in Thump stays until the pad moves');
+      onPadPreset(3);
+      ok(padPresets.slot === 3 && state.kit.id === id, 'presets: the pad moving to preset 4 loads your kit');
+      padPresets.follow = false; onPadPreset(1);
+      ok(padPresets.slot === 3, 'presets: with following off the kit stays');
+      deleteKit(id);
+      ok(!userKits[id] && state.kit.id === 'custom' && state.pads[2].sound === 'syn:clang', 'kits: deleting a kit leaves the presets that use it alone');
+      for (const k of Object.keys(userKits)) delete userKits[k];
+      Object.assign(userKits, JSON.parse(keepKits)); store.set('kits', userKits);
+      Object.assign(padPresets, JSON.parse(keepPresets)); savePresets();
+      padPreset = null;
+      const k = kitDef(padPresets.slots[padPresets.slot].kit.id);
+      if (k) loadKit(k.id); else loadKit('dubstep');
+    }
+    {
+      // The spectrum: a quiet hi-hat lights the treble, and music's usual slope reads about level.
+      const bins = 1024, rate = 48000, hzOf = k => k * rate / 2 / bins;
+      const hat = scopeLevels(Float32Array.from({ length: bins }, (_, k) => hzOf(k) > 6000 ? -50 : -140), rate, 16);
+      ok(Math.round(hat[14] * 9) >= 4 && hat[3] === 0, `scope: a quiet hi-hat lights the treble (${Math.round(hat[14] * 9)} of 9)`);
+      const slope = scopeLevels(Float32Array.from({ length: bins }, (_, k) => -30 - 15 * Math.log10(Math.max(1, hzOf(k)) / 1000)), rate, 16);
+      const mid = [...slope].slice(3);
+      ok(Math.max(...mid) - Math.min(...mid) < 0.2, `scope: a spectrum falling 4.5 dB an octave reads level (${mid.map(v => Math.round(v * 9)).join('')})`);
     }
     {
       // The knobs turn the real settings, and the display follows the pattern and the beat.
@@ -2421,8 +2751,9 @@
 
   // ---------------------------------------------------------------- start
   async function init() {
-    buildPads(); buildPanel(); buildTransport(); buildBeatMenu(); bindKeys();
-    $('#kitSel').onchange = e => loadPreset(e.target.value);
+    buildPads(); buildPresetKeys(); buildPanel(); buildTransport(); buildBeatMenu(); bindKeys();
+    $('#kitSel').onchange = e => loadKit(e.target.value);
+    $('#kitsBtn').onclick = kitsDialog;
     $('#helpBtn').onclick = showHelp;
     $('#settingsBtn').onclick = settingsDialog;
     $('#lightsBtn').onclick = lightsDialog;
@@ -2452,13 +2783,15 @@
     ctx.onstatechange = () => { gate.hidden = ctx.state === 'running'; };
     setTimeout(() => { gate.hidden = ctx.state === 'running'; }, 600);
 
-    if (location.search.includes('selftest')) { renderAll(); return selftest(); }
+    if (location.search.includes('selftest')) { initPresets(); renderAll(); return selftest(); }
 
     await loadUserSounds();
     state = loadBeat(store.get('session', null));
+    initPresets();
     applyMaster();
     renderAll();
     preloadKit();
+    setTimeout(preloadSlots, 2500);
     initMidi();
     displayLoop();
     if (document.fonts) document.fonts.ready.then(() => drawLoop());
@@ -2476,6 +2809,6 @@
     if (!store.get('seenHelp2', false)) { store.set('seenHelp2', true); showHelp(); }
   }
   // Test hooks for tools/cdp.mjs.
-  window.thump = { lights, makeLights, SMC, lightOpts, lightsDialog, connectBt, chooseLink, get state() { return state; }, seq, play, stop, padDown, padUp, renderAll, chopDialog, wobbleDialog, micDialog, exportDialog, settingsDialog, toggleMute, choosePattern, copyToNext };
+  window.thump = { live, library, loadSound, scopeLevels, padPresets, get padPreset() { return padPreset; }, goSlot, kitsDialog, lights, makeLights, SMC, lightOpts, lightsDialog, connectBt, chooseLink, get state() { return state; }, seq, play, stop, padDown, padUp, renderAll, chopDialog, wobbleDialog, micDialog, exportDialog, settingsDialog, toggleMute, choosePattern, copyToNext };
   init();
 })();

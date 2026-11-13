@@ -288,15 +288,36 @@ kbd { font: 11px var(--mono); padding: 1px 5px; border-radius: 3px; color: var(-
 /* ---------------------------------------------------------------- pads and panel */
 main { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 22px; align-items: start; padding: 14px 4px; }
 @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
-.pads-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.pads-wrap { --size: min(100% - 28px, calc(100vh - 520px), 640px); display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .grid {
-  --size: min(100% - 28px, calc(100vh - 470px), 640px);
   width: var(--size); min-width: 320px; aspect-ratio: 1;
   display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); gap: 12px;
   container-type: inline-size; padding: 14px; border-radius: 10px; box-sizing: content-box;
   background: linear-gradient(180deg, #0a0a0b, #0f1011);
   box-shadow: inset 0 2px 10px #000, inset 0 0 0 1px #000, 0 1px 0 #ffffff12;
 }
+/* the pad's four presets: one key over each column, as Shift + pads 13-16 on the Pocket */
+.presets { width: var(--size); min-width: 320px; padding: 0 14px; box-sizing: content-box; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: -2px; }
+.pkey {
+  position: relative; display: flex; align-items: center; gap: 7px; min-width: 0; height: 30px; padding: 0 10px 0 9px;
+  border: 1px solid #070707; border-radius: 4px; cursor: pointer; text-align: left;
+  font: 700 13px/1 "Barlow Condensed", sans-serif; letter-spacing: .1em; color: var(--ink-dim);
+  background: linear-gradient(180deg, #27282b, #1b1c1e);
+  box-shadow: inset 0 1px 0 #ffffff12, inset 0 -2px 0 #0000004a, 0 2px 4px #0009;
+}
+.pkey:hover { color: var(--ink); background: linear-gradient(180deg, #2f3034, #212225); }
+.pkey i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #2b1a10; box-shadow: inset 0 1px 1px #000c, 0 0 0 1px #000; }
+.pkey b { flex: none; font: inherit; }
+.pkey .kname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px/1 var(--mono); letter-spacing: .02em; color: var(--ink-faint); }
+.pkey[aria-pressed="true"] { color: #fff3ea; background: linear-gradient(180deg, #33231a, #20160f); box-shadow: inset 0 2px 0 var(--accent), inset 0 3px 8px -3px #ff6a1a88, 0 2px 4px #0009; }
+.pkey[aria-pressed="true"] i { background: radial-gradient(circle at 40% 35%, #ffe0c8, var(--accent) 60%); box-shadow: 0 0 8px 1px var(--accent), 0 0 0 1px #000; }
+.pkey[aria-pressed="true"] .kname { color: var(--vfd); text-shadow: 0 0 6px #6af7dc55; }
+/* a cyan pip: the preset your pad says it is on */
+/* above the pads: LED and number on top, the kit's name underneath */
+.pkey.two { flex-direction: column; align-items: stretch; justify-content: center; gap: 5px; height: 42px; padding: 0 9px; }
+.pkey .ptop { display: flex; align-items: center; gap: 6px; font: var(--label); letter-spacing: .16em; text-transform: uppercase; }
+.pkey .ptop b { font: inherit; }
+.pkey.here::after { content: ""; position: absolute; right: 5px; top: 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--vfd); box-shadow: 0 0 6px var(--vfd); }
 .hint { margin: 0; color: var(--ink-faint); font-size: 13px; text-align: center; letter-spacing: .02em; }
 .banner { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 680px; padding: 8px 8px 8px 14px; border-radius: 4px; font: 13px var(--mono); color: var(--vfd); background: #07100e; box-shadow: inset 0 1px 3px #000, inset 3px 0 0 var(--vfd), 0 1px 0 #ffffff0d; }
 
@@ -491,6 +512,20 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px va
 .modal-card canvas { width: 100%; display: block; border-radius: 6px; background: #060a09; box-shadow: inset 0 0 0 1px #1d2a27, inset 0 2px 8px #000, 0 1px 0 #ffffff12; }
 .modal-card .status { color: var(--vfd); font: 13px var(--mono); min-height: 18px; }
 .modal-card.wide { width: min(740px, calc(100vw - 32px)); }
+/* kits dialog */
+.modal-card .slots { display: grid; gap: 8px; margin: 10px 0 12px; }
+.slot-row { display: grid; grid-template-columns: 70px 110px 1fr; align-items: center; gap: 12px; }
+.slot-row .pkey { height: 34px; }
+.slot-row .slot-hint { font: var(--label); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-dim); }
+.slot-row select { width: 100%; }
+.fill-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 16px; }
+.fill-row > span { font: var(--label); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-dim); margin-right: 6px; }
+.kit-list { display: grid; gap: 6px; margin: 8px 0 4px; max-height: 240px; overflow: auto; }
+.kit-item { display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: 4px; background: var(--well); box-shadow: inset 0 1px 3px #000, 0 1px 0 #ffffff0d; }
+.kit-item b { display: block; font: 15px/1.2 var(--mono); color: var(--vfd); }
+.kit-item.on { box-shadow: inset 3px 0 0 var(--accent), inset 0 1px 3px #000, 0 1px 0 #ffffff0d; }
+.kit-list .empty { margin: 0; font-size: 14px; color: var(--ink-faint); }
+@media (max-width: 560px) { .slot-row { grid-template-columns: 64px 1fr; } .slot-row .slot-hint { display: none; } }
 .meter { height: 10px; border-radius: 2px; background: #050505; overflow: hidden; box-shadow: inset 0 1px 2px #000; }
 .meter i { display: block; height: 100%; width: 0; transition: width .05s; background: repeating-linear-gradient(90deg, transparent 0 3px, #050505 3px 4px), linear-gradient(90deg, var(--ok), var(--warn) 70%, var(--rec)); }
 .bigrec { width: 100%; height: 56px; font-size: 18px; }
