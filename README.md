@@ -71,7 +71,7 @@ still work.
 `sources/extra/`, for kits from Hydrogen's library that don't state a license. Neither is in
 this repository; the app loads `kits-extra.js` if it is there.
 
-The self-test (167 checks) checks every preset sound exists, renders every synth sound and 15
+The self-test (168 checks) checks every preset sound exists, renders every synth sound and 15
 wobble designs, decodes every sample, and checks loop timing, swing, song order, pattern
 switching, old beat files, offline rendering, WAV and MP3 encoding, mic trimming, the
 chopper's hit detection, and the pad lights against a pretend pad. `--fake-media` gives headless Chromium a fake microphone; `--shot
@@ -89,7 +89,9 @@ Over Bluetooth the same packets go raw (no SysEx) to GATT characteristic `AE41` 
 `AE40`, with answers on `AE42`. Thump reaches it with Web Bluetooth, which Chromium on Linux only
 offers with `--enable-features=WebBluetooth,WebBluetoothNewPermissionsBackend` (the launcher passes
 it). The first time, Connect over Bluetooth in the Lights panel opens Chromium's device chooser;
-after that Thump reconnects by itself. With the cable in, Thump uses USB.
+after that Thump reconnects by itself. With the cable in, Thump uses USB. Chromium on Linux
+sometimes hands over each notification twice at once; Thump drops those repeats. When Thump
+closes, it puts the pad's own colors back over either link.
 
 ## License
 

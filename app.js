@@ -774,6 +774,17 @@
         }
       };
     },
+    // Chromium on Linux can hand over the same Bluetooth notification twice, a fraction of a
+    // millisecond apart, which scrambles answers that span several notifications. The pad
+    // never sends two identical pieces that close together, so a repeat like that is dropped.
+    unrepeat(onBytes, now = () => performance.now()) {
+      let last = null, at = 0;
+      return bytes => {
+        const t = now(), again = !!last && t - at < 4 && last.length === bytes.length && last.every((x, i) => x === bytes[i]);
+        last = bytes; at = t;
+        if (!again) onBytes(bytes);
+      };
+    },
   };
   // Settings memory of the Pocket: 4 presets of 2931 bytes, each 112 pad records
   // (7 banks of 16) of 26 bytes, `00 <channel> <note> <min> <max> R G B FF ...`.
@@ -794,8 +805,8 @@
       send: b => { tx.writeValueWithoutResponse(new Uint8Array(b)).catch(() => { }); },
       close() { try { gatt.disconnect(); } catch { } },
     };
-    const join = SMC.joiner(p => link.onPacket && link.onPacket(p));
-    rx.addEventListener('characteristicvaluechanged', e => { const v = e.target.value; join(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)); });
+    const feed = SMC.unrepeat(SMC.joiner(p => link.onPacket && link.onPacket(p)));
+    rx.addEventListener('characteristicvaluechanged', e => { const v = e.target.value; feed(new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength))); });
     await rx.startNotifications();
     device.addEventListener('gattserverdisconnected', () => link.onClose && link.onClose(), { once: true });
     return link;
@@ -2208,6 +2219,14 @@
       const got = [], join = SMC.joiner(p => got.push(p.cmd)), pk = SMC.packet(0x23, Array.from({ length: 600 }, (_, i) => i & 255));
       join(pk.slice(0, 3)); join(pk.slice(3, 500)); join([...pk.slice(500), ...SMC.packet(0x00, [0])]); join([9, 9, 9]); join(SMC.packet(0x11, [1]));
       ok(got.join() === '35,0,17', `lights: joins Bluetooth notifications into packets (${got.join()})`);
+      {
+        // Each piece handed over twice at once (seen on Linux), then a real repeat later on.
+        let t = 0; const seen = [], feed = SMC.unrepeat(SMC.joiner(p => seen.push(p.data.length)), () => t);
+        for (const piece of [pk.slice(0, 300), pk.slice(300)]) { feed(piece); t += 0.1; feed(piece.slice()); t += 20; }
+        const short = SMC.packet(0x23, [4, 0, 0, 0, 0, 12, 0, 0]);
+        feed(short); t += 450; feed(short.slice());
+        ok(seen.join() === '600,8,8', `lights: drops notifications handed over twice, keeps real repeats (${seen.join()})`);
+      }
 
       // The pretend pad: preset 1, with pads 1 and 2 of bank 3 swapped in its note layout.
       const mem = new Uint8Array(POCKET.size);

@@ -2,6 +2,7 @@
 // Usage: node tools/cdp.mjs <url> [--shot out.png] [--eval "js expr"] [--wait ms] [--size 1400x900]
 //        [--fake-media] [--grant-midi]   (--grant-midi allows MIDI with SysEx, for the pad lights)
 //        [--flags "--chromium --flags"] [--select-bt NAME]   (answers Web Bluetooth's chooser with NAME)
+//        [--close]   (ends by closing the page the way a window closes, so the page's close code runs)
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -66,6 +67,14 @@ try {
     const r = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(shot, Buffer.from(r.result.data, 'base64'));
     console.log('screenshot ' + shot);
+  }
+  if (args.includes('--close')) {
+    // Page.close runs the page's beforeunload and pagehide code like closing a window does.
+    // (Browser.close would skip it.) The browser then gets a moment before it is stopped.
+    const gone = new Promise(r => ws.addEventListener('close', r));
+    send('Page.close');
+    console.log(await Promise.race([gone.then(() => 'page closed'), sleep(5000).then(() => 'page did not close in 5 s')]));
+    await sleep(1500);
   }
   if (logs.length) console.log('--- page log\n' + logs.join('\n'));
 } finally {
