@@ -11,7 +11,8 @@ Linux), plus mouse and keyboard.
 The launcher (`./thump`) opens Chromium with its own profile in `~/.local/share/thump/browser`,
 lets sound start without a click, stops Chromium slowing the app down when its window is in the
 background, and asks Bluetooth to connect the pad if it is switched on. Chromium asks once to
-allow MIDI devices (and the microphone, the first time you record): choose Allow.
+let Thump control MIDI devices (needed for the pad lights) and the microphone the first time you
+record: choose Allow.
 
 ## What it does
 
@@ -31,6 +32,10 @@ allow MIDI devices (and the microphone, the first time you record): choose Allow
   wave, filter range, resonance, growl, grit, sub and width. Designs follow the tempo.
 - **Your own sounds**: drop audio files on a pad, record with the microphone (silence is
   trimmed), or chop a long sound across the pads (by detected hits or 16 equal slices).
+- **Pad lights** (SMC-PAD Pocket over USB): each pad lights in its sound's color, flashes when
+  it plays (by hand or from the beat) and goes dark when muted or empty. Thump never saves to the
+  pad: its own colors come back when Thump closes, when the lights are turned off in Settings, or
+  when the pad is switched off.
 - **Save audio**: render a pattern (×1 to ×8) or the whole song to MP3 or WAV, faster than
   real time. Beats save in the app and export to `.thump.json` (with your own sounds inside).
 
@@ -62,11 +67,22 @@ still work.
 `sources/extra/`, for kits from Hydrogen's library that don't state a license. Neither is in
 this repository; the app loads `kits-extra.js` if it is there.
 
-The self-test (147 checks) checks every preset sound exists, renders every synth sound and 15
+The self-test (159 checks) checks every preset sound exists, renders every synth sound and 15
 wobble designs, decodes every sample, and checks loop timing, swing, song order, pattern
-switching, old beat files, offline rendering, WAV and MP3 encoding, mic trimming and the
-chopper's hit detection. `--fake-media` gives headless Chromium a fake microphone; `--shot
+switching, old beat files, offline rendering, WAV and MP3 encoding, mic trimming, the
+chopper's hit detection, and the pad lights against a pretend pad. `--fake-media` gives headless Chromium a fake microphone; `--shot
 file.png` saves a screenshot.
+
+## How the pad lights work
+
+The pad ignores MIDI notes sent to it. Its colors live in the settings memory that M-VAVE's
+editor app changes with SysEx on the USB "Private" port, using a protocol reverse-engineered by
+[spectalive/smc-pad](https://github.com/spectalive/smc-pad) for the bigger SMC-PAD; the Pocket
+uses the same protocol. Its memory holds 4 presets of 2931 bytes, each 112 pad records (7 banks
+of 16) of 26 bytes, with the pad's red, green and blue at bytes 5 to 7. The pad only takes writes
+after a full read of its settings, kept alive by reading its 12-byte global block twice a second.
+Over Bluetooth the same settings are reached through a separate GATT service (`AE40`), which
+Thump doesn't use yet.
 
 ## License
 

@@ -1,5 +1,6 @@
 // Drive headless Chromium over the DevTools protocol to test Thump.
 // Usage: node tools/cdp.mjs <url> [--shot out.png] [--eval "js expr"] [--wait ms] [--size 1400x900]
+//        [--fake-media] [--grant-midi]   (--grant-midi allows MIDI with SysEx, for the pad lights)
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,6 +41,10 @@ try {
   });
   const send = (method, params = {}) => new Promise(r => { const n = ++id; waiting.set(n, r); ws.send(JSON.stringify({ id: n, method, params })); });
   await send('Runtime.enable'); await send('Log.enable'); await send('Page.enable');
+  if (args.includes('--grant-midi')) {
+    const r = await send('Browser.grantPermissions', { permissions: ['midi', 'midiSysex'] });
+    if (r.error) console.error('grant failed', JSON.stringify(r.error));
+  }
   await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url });
   await sleep(wait);
