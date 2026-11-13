@@ -1479,22 +1479,38 @@
   // its energy thinly over the wide treble bands, counts in full. It also tilts up 1.5 dB
   // per octave around 1 kHz, because music gets quieter towards the treble. Bars jump up
   // at once and fall back smoothly, so short hits show.
-  const SCOPE = { lo: 35, hi: 16000, floor: -60, top: -12, tilt: 1.5, fall: 2.4, hold: 0.45 };
-  function scopeLevels(db, rate, bands, out = new Float32Array(bands)) {
+  // Like a recording meter with auto gain, the top of the display follows the loudest band
+  // heard lately: it rises at once and sinks 6 dB a second. So a quiet kit or soft playing
+  // still fills the display, and the bars show how the sounds compare. The display spans
+  // 36 dB (4 dB a light).
+  const SCOPE = { lo: 35, hi: 16000, range: 36, top: -12, topMin: -50, topMax: 0, headroom: 3, sink: 6, tilt: 1.5, fall: 1.8, hold: 0.45 };
+  function scopeBands(db, rate, bands, out = new Float32Array(bands)) {
     const hz = db.length / (rate / 2), span = SCOPE.hi / SCOPE.lo;
     for (let i = 0; i < bands; i++) {
       const f0 = SCOPE.lo * span ** (i / bands), f1 = SCOPE.lo * span ** ((i + 1) / bands);
       const lo = Math.floor(f0 * hz), hi = Math.max(lo + 1, Math.ceil(f1 * hz));
       let p = 0;
       for (let k = lo; k < hi && k < db.length; k++) p += 10 ** (db[k] / 10);
-      const level = 10 * Math.log10(p || 1e-30) + SCOPE.tilt * Math.log2(Math.sqrt(f0 * f1) / 1000);
-      out[i] = clamp((level - SCOPE.floor) / (SCOPE.top - SCOPE.floor), 0, 1);
+      out[i] = 10 * Math.log10(p || 1e-30) + SCOPE.tilt * Math.log2(Math.sqrt(f0 * f1) / 1000);
     }
     return out;
   }
-  const LEVELS = 9, scopeDb = new Float32Array(1024), scopeNow = new Float32Array(64), scopeVals = new Float32Array(64);
+  const scopeMap = (raw, top, bands, out) => {
+    for (let i = 0; i < bands; i++) out[i] = clamp((raw[i] - (top - SCOPE.range)) / SCOPE.range, 0, 1);
+    return out;
+  };
+  // Levels from 0 to 1 against a fixed top (the selftest uses this).
+  const scopeLevels = (db, rate, bands, out = new Float32Array(bands), top = SCOPE.top) => scopeMap(scopeBands(db, rate, bands, out), top, bands, out);
+  // One frame of the auto gain: moves the top, then maps the bands under it.
+  function scopeFollow(raw, bands, dt, out) {
+    let loud = -Infinity;
+    for (let i = 0; i < bands; i++) loud = Math.max(loud, raw[i]);
+    scopeTop = clamp(Math.max(loud + SCOPE.headroom, scopeTop - SCOPE.sink * dt), SCOPE.topMin, SCOPE.topMax);
+    return scopeMap(raw, scopeTop, bands, out);
+  }
+  const LEVELS = 9, scopeDb = new Float32Array(1024), scopeRaw = new Float32Array(64), scopeNow = new Float32Array(64), scopeVals = new Float32Array(64);
   const scopePeaks = new Float32Array(64), scopePeakT = new Float64Array(64), shownText = {};
-  let scopeIdle = false, scopeT = 0;
+  let scopeIdle = false, scopeT = 0, scopeTop = SCOPE.topMin;
   const show = (id, text) => { if (shownText[id] !== text) { shownText[id] = text; $(id).textContent = text; } };
   const barsText = n => `${n} BAR${n > 1 ? 'S' : ''}`;
   function updateDisplay() {
@@ -1518,7 +1534,7 @@
     const now = performance.now(), dt = Math.min(0.1, (now - scopeT) / 1000), BANDS = clamp(Math.round(w / 8), 16, 64);
     scopeT = now;
     an.getFloatFrequencyData(scopeDb);
-    scopeLevels(scopeDb, ctx.sampleRate, BANDS, scopeNow);
+    scopeFollow(scopeBands(scopeDb, ctx.sampleRate, BANDS, scopeRaw), BANDS, dt, scopeNow);
     let quiet = true;
     for (let i = 0; i < BANDS; i++) {
       scopeVals[i] = Math.max(scopeNow[i], scopeVals[i] - SCOPE.fall * dt);
@@ -2726,6 +2742,19 @@
       const slope = scopeLevels(Float32Array.from({ length: bins }, (_, k) => -30 - 15 * Math.log10(Math.max(1, hzOf(k)) / 1000)), rate, 16);
       const mid = [...slope].slice(3);
       ok(Math.max(...mid) - Math.min(...mid) < 0.2, `scope: a spectrum falling 4.5 dB an octave reads level (${mid.map(v => Math.round(v * 9)).join('')})`);
+      // The auto gain: after loud music a very quiet hi-hat fills the display within seconds,
+      // and a loud kick after it reaches the top at once without going past it.
+      const keepTop = scopeTop, out = new Float32Array(16);
+      const soft = scopeBands(Float32Array.from({ length: bins }, (_, k) => hzOf(k) > 6000 ? -80 : -200), rate, 16);
+      scopeTop = SCOPE.top;
+      let first = 0;
+      for (let f = 0; f < 60; f++) { scopeFollow(soft, 16, 0.1, out); if (!f) first = Math.max(...out); }
+      const filled = Math.round(Math.max(...out) * 9);
+      ok(Math.round(first * 9) <= 2 && filled >= 7, `scope: a quiet hi-hat fills the display after a while (${Math.round(first * 9)} at first, ${filled} after 6 s)`);
+      const kick = scopeBands(Float32Array.from({ length: bins }, (_, k) => hzOf(k) < 150 ? -20 : -200), rate, 16);
+      const top = Math.round(Math.max(...scopeFollow(kick, 16, 0.016, out)) * 9);
+      ok(top === 8, `scope: a loud kick right after reaches the top at once (${top} of 9)`);
+      scopeTop = keepTop;
     }
     {
       // The knobs turn the real settings, and the display follows the pattern and the beat.

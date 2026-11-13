@@ -5,7 +5,7 @@ app window. Works with the pad over USB or Bluetooth (both show up as normal MID
 Linux), plus mouse and keyboard.
 
 It looks and works like a piece of hardware: a graphite body with silkscreened labels, a
-glowing display (tempo, pattern, bar, beat and step, and a live spectrum of what you hear, from
+glowing display (tempo, pattern, bar, beat and step, and a live spectrum of what you hear that sets its own sensitivity like a recording meter, from
 kick drums on the left to hi-hats on the right),
 pads lit from inside in each sound's color that flare when hit, knobs you drag up and down,
 keys with indicator lights, and a step grid that lights up as the beat runs.
@@ -88,10 +88,10 @@ still work.
 `sources/extra/`, for kits from Hydrogen's library that don't state a license. Neither is in
 this repository; the app loads `kits-extra.js` if it is there.
 
-The self-test (191 checks) checks every preset sound exists, renders every synth sound and 15
+The self-test (193 checks) checks every preset sound exists, renders every synth sound and 15
 wobble designs, decodes every sample, and checks loop timing, swing, song order, pattern
 switching, old beat files, offline rendering, WAV and MP3 encoding, mic trimming, the
-chopper's hit detection, your kits and the four presets, the spectrum's levels, and the pad
+chopper's hit detection, your kits and the four presets, the spectrum's levels and auto gain, and the pad
 lights and preset following against a pretend pad. `--fake-media` gives headless Chromium a fake microphone; `--shot
 file.png` saves a screenshot.
 
