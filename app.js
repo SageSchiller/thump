@@ -228,6 +228,8 @@
     M.hp.connect(M.send).connect(M.verb).connect(M.comp);
     M.comp.connect(M.out).connect(ac.destination);
     M.click.connect(M.out);
+    M.an = ac.createAnalyser(); M.an.fftSize = 2048; M.an.smoothingTimeConstant = 0.7; M.an.minDecibels = -90; M.an.maxDecibels = -6;
+    M.out.connect(M.an);
     M.verb.buffer = impulse(ac);
     const E = { ac, M, voices: new Set(), ducks: [], pump: { amount: 0, mode: 'kick', spb: 0.5 } };
 
@@ -1084,12 +1086,9 @@
     const pad = padEls[i];
     if (!pad) return;
     if (beat ? lightOpts.beat : lightOpts.flash) lights.flash(i, vel, lightOpts.white);
-    const v = Math.max(0.3, vel / 127), c = pad.style.getPropertyValue('--c') || '#888';
-    pad.querySelector('.flash').animate([{ opacity: v }, { opacity: 0 }], { duration: 420, easing: 'cubic-bezier(.2,.7,.3,1)' });
-    pad.animate([
-      { transform: 'scale(.955)', boxShadow: `0 0 ${10 + 40 * v}px ${2 + 8 * v}px ${c}77` },
-      { transform: 'scale(1)', boxShadow: '0 8px 18px #0006' },
-    ], { duration: 380, easing: 'cubic-bezier(.2,.7,.3,1)' });
+    const v = Math.max(0.3, vel / 127);
+    pad.querySelector('.flash').animate([{ opacity: v }, { opacity: v * 0.55, offset: 0.25 }, { opacity: 0 }], { duration: 480, easing: 'cubic-bezier(.2,.7,.3,1)' });
+    pad.animate([{ transform: `translateY(${1 + 2 * v}px) scale(.975)` }, { transform: 'none' }], { duration: 260, easing: 'cubic-bezier(.2,.7,.3,1)' });
   }
   function select(i) {
     sel = i;
@@ -1115,16 +1114,50 @@
     ['swing', 'Swing', 0.5, 0.75, 0.01, v => v < 0.505 ? 'Straight' : pct(v), 0.5],
   ];
   const ctrlEls = { pad: {}, master: {} };
+  // A knob turns a hidden range input: drag up or down (Shift for fine moves), scroll over it,
+  // or focus it and use the arrow keys. Double-click puts it back to its starting value.
+  function makeKnob(input, min, max, step, reset, center) {
+    const R = 24, C = 2 * Math.PI * R, L = C * 0.75;
+    const k = el('div', { class: 'knob', 'aria-hidden': 'true' });
+    k.innerHTML = `<svg viewBox="0 0 64 64"><circle class="trk" cx="32" cy="32" r="${R}" stroke-dasharray="${L} ${C}" transform="rotate(135 32 32)"/>` +
+      `<circle class="val" cx="32" cy="32" r="${R}" transform="rotate(135 32 32)"/></svg><i class="cap"></i>`;
+    const val = k.querySelector('.val');
+    const draw = () => {
+      const p = clamp((input.value - min) / (max - min), 0, 1), from = center ? Math.min(p, 0.5) : 0, len = center ? Math.abs(p - 0.5) : p;
+      k.style.setProperty('--a', (-135 + 270 * p) + 'deg');
+      val.setAttribute('stroke-dasharray', `${len * L} ${C}`);
+      val.setAttribute('stroke-dashoffset', -from * L);
+    };
+    const set = v => {
+      v = +clamp(Math.round((v - min) / step) * step + min, min, max).toFixed(4);
+      if (v !== +input.value) { input.value = v; input.dispatchEvent(new Event('input')); }
+    };
+    let y0 = null, v0 = 0;
+    k.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      e.preventDefault(); k.setPointerCapture(e.pointerId);
+      y0 = e.clientY; v0 = +input.value; k.classList.add('turn');
+      input.focus({ preventScroll: true });
+    });
+    k.addEventListener('pointermove', e => { if (y0 != null) set(v0 + (y0 - e.clientY) / (e.shiftKey ? 700 : 160) * (max - min)); });
+    const end = () => { y0 = null; k.classList.remove('turn'); };
+    k.addEventListener('pointerup', end);
+    k.addEventListener('pointercancel', end);
+    k.addEventListener('wheel', e => { e.preventDefault(); set(+input.value - Math.sign(e.deltaY) * Math.max(step, (max - min) / 50)); }, { passive: false });
+    k.addEventListener('dblclick', reset);
+    return { el: k, draw };
+  }
   function makeCtrl(where, [key, label, min, max, step, fmt, def], onChange) {
-    const input = el('input', { type: 'range', min, max, step, id: where + '-' + key, class: min < 0 ? 'center' : null });
+    const input = el('input', { type: 'range', min, max, step, id: where + '-' + key, class: 'sr' + (min < 0 ? ' center' : '') });
     const out = el('output', { title: 'Double-click to reset' });
-    const setFill = () => input.style.setProperty('--p', ((input.value - min) / (max - min) * 100) + '%');
-    input.addEventListener('input', () => { const v = +input.value; out.textContent = fmt(v); setFill(); onChange(key, v); });
     const reset = () => { input.value = def ?? PAD_DEFAULT[key]; input.dispatchEvent(new Event('input')); };
+    const knob = makeKnob(input, min, max, step, reset, min < 0);
+    const setFill = () => { input.style.setProperty('--p', ((input.value - min) / (max - min) * 100) + '%'); knob.draw(); };
+    input.addEventListener('input', () => { const v = +input.value; out.textContent = fmt(v); setFill(); onChange(key, v); });
     out.addEventListener('dblclick', reset);
     input.addEventListener('dblclick', reset);
     ctrlEls[where][key] = { input, out, fmt, setFill };
-    return el('div', { class: 'ctrl' }, el('label', { for: input.id }, label), input, out);
+    return el('div', { class: 'ctrl knob-ctrl', title: `${label}: drag up or down, or scroll. Double-click to reset.` }, knob.el, el('label', { for: input.id }, label), out, input);
   }
   function setCtrl(where, key, v) {
     const c = ctrlEls[where][key];
@@ -1400,6 +1433,62 @@
     requestAnimationFrame(frame);
   }
 
+  // ---------------------------------------------------------------- UI: display
+  // The display shows the pattern, where the beat is, what the machine is doing, and a
+  // spectrum of what comes out of the speakers, low notes on the left.
+  const LEVELS = 9, scopeBins = new Uint8Array(1024), scopePeaks = new Float32Array(64), shownText = {};
+  let scopeIdle = false;
+  const show = (id, text) => { if (shownText[id] !== text) { shownText[id] = text; $(id).textContent = text; } };
+  const barsText = n => `${n} BAR${n > 1 ? 'S' : ''}`;
+  function updateDisplay() {
+    const g = seq.seg, t = seq.playing ? posNow() : 0;
+    let pos = '-.-.-', mode = 'STOP', sub = barsText(pat().bars);
+    if (!seq.playing && state.songMode && state.song.length) { mode = 'SONG'; sub = `${state.song.length} PART${state.song.length > 1 ? 'S' : ''}`; }
+    if (seq.playing && t < 0) { mode = seq.recording ? 'REC' : 'COUNT'; sub = `IN ${Math.ceil(-t)}`; }
+    else if (seq.playing && g) {
+      const b = Math.max(0, t - g.start);
+      pos = `${Math.floor(b / 4) + 1}.${Math.floor(b % 4) + 1}.${Math.floor(b * 4) % 4 + 1}`;
+      mode = seq.recording ? 'REC' : g.songIdx != null ? 'SONG' : 'LOOP';
+      sub = seq.queued != null ? `NEXT ${LETTERS[seq.queued]}` : g.songIdx != null ? `PART ${g.songIdx + 1}/${state.song.length}` : barsText(state.patterns[g.pat].bars);
+    }
+    show('#dPat', LETTERS[seq.playing && g ? g.pat : state.pat]);
+    show('#dPos', pos); show('#dMode', mode); show('#dSub', sub);
+    $('#display').classList.toggle('rec', seq.recording);
+  }
+  function drawScope() {
+    const cv = $('#scope'), w = cv.clientWidth, h = cv.clientHeight, an = live.M.an;
+    if (!w || !h) return;
+    an.getByteFrequencyData(scopeBins);
+    const quiet = scopeBins.every(v => v === 0) && scopePeaks.every(v => v === 0);
+    if (quiet && scopeIdle) return;
+    scopeIdle = quiet;
+    const dpr = devicePixelRatio || 1;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const BANDS = clamp(Math.round(w / 8), 16, 64), bins = an.frequencyBinCount, hz = bins / (ctx.sampleRate / 2), bw = w / BANDS, sh = h / LEVELS;
+    for (let i = 0; i < BANDS; i++) {
+      const lo = Math.floor(35 * Math.pow(16000 / 35, i / BANDS) * hz), hi = Math.max(lo + 1, Math.ceil(35 * Math.pow(16000 / 35, (i + 1) / BANDS) * hz));
+      let v = 0;
+      for (let k = lo; k < hi && k < bins; k++) v = Math.max(v, scopeBins[k]);
+      v /= 255;
+      scopePeaks[i] = v >= scopePeaks[i] ? v : Math.max(0, scopePeaks[i] - 0.015);
+      const lit = Math.round(v * LEVELS), peak = Math.min(LEVELS - 1, Math.floor(scopePeaks[i] * LEVELS));
+      for (let r = 0; r < LEVELS; r++) {
+        const on = r < lit || (r === peak && scopePeaks[i] > 0.06);
+        g.fillStyle = !on ? '#6af7dc12' : r >= LEVELS - 2 ? '#ff8c42' : '#6af7dc';
+        g.fillRect(i * bw + 1, h - (r + 1) * sh + 1, Math.max(1, bw - 2), Math.max(1, sh - 2));
+      }
+    }
+  }
+  function displayLoop() {
+    requestAnimationFrame(displayLoop);
+    if (document.hidden) return;
+    updateDisplay();
+    drawScope();
+  }
+
   // ---------------------------------------------------------------- UI: loop view
   let allRows = false;
   const LABEL_W = 132, ROW_H = 22;
@@ -1419,44 +1508,59 @@
     const n = pat().events.filter(e => e.beat < L).length;
     $('#loopInfo').textContent = `${pat().bars} bar${pat().bars > 1 ? 's' : ''}` + (n ? ` · ${n} hit${n === 1 ? '' : 's'} · click a square to add or remove a hit, click a name to mute` : '');
     if (!rows.length) {
-      g.fillStyle = '#5d6274'; g.font = '13px system-ui, sans-serif';
-      g.fillText('Press Rec to record what you play, or turn on "All pads" to click hits in.', 14, 36);
+      g.fillStyle = '#6af7dcaa'; g.font = '14px "Share Tech Mono", monospace'; g.textBaseline = 'middle';
+      g.shadowColor = '#6af7dc'; g.shadowBlur = 6;
+      g.fillText('> Press Rec to record what you play, or turn on "All pads" to click hits in.', 16, 34);
+      g.shadowBlur = 0;
       return;
     }
-    const cw = (w - LABEL_W) / steps;
-    for (let s = 0; s < steps; s++) {
-      g.fillStyle = Math.floor(s / 4) % 2 ? '#181a22' : '#1d1f29';
-      g.fillRect(LABEL_W + s * cw, 4, cw, rows.length * ROW_H);
-      if (s % 16 === 0 && s) { g.fillStyle = '#3a3e50'; g.fillRect(LABEL_W + s * cw - 1, 4, 2, rows.length * ROW_H); }
+    // Step keys: unlit, a little brighter on each beat's first step, an orange seam between bars.
+    const cw = (w - LABEL_W) / steps, gap = cw > 14 ? 2 : 1;
+    let playStep = -1;
+    if (seq.playing && seq.seg && seq.seg.pat === state.pat) {
+      const pos = posNow();
+      if (pos >= seq.seg.start) playStep = Math.floor(clamp(pos - seq.seg.start, 0, L - 0.001) * 4);
     }
-    g.font = '12px system-ui, sans-serif'; g.textBaseline = 'middle';
+    for (let r = 0; r < rows.length; r++) {
+      const y = 4 + r * ROW_H;
+      for (let st = 0; st < steps; st++) {
+        g.fillStyle = st === playStep ? '#2a1d14' : st % 4 === 0 ? '#1f2022' : Math.floor(st / 4) % 2 ? '#161719' : '#19191b';
+        g.beginPath(); g.roundRect(LABEL_W + st * cw + gap / 2, y + 3, cw - gap, ROW_H - 6, 2); g.fill();
+      }
+    }
+    for (let st = 16; st < steps; st += 16) { g.fillStyle = '#ff6a1a55'; g.fillRect(LABEL_W + st * cw - 1, 2, 2, rows.length * ROW_H + 4); }
+    g.font = '600 13px "Barlow Condensed", sans-serif'; g.textBaseline = 'middle';
     rows.forEach((pad, r) => {
-      const y = 4 + r * ROW_H, info = library.get(state.pads[pad].sound), m = state.mutes[pad];
-      g.fillStyle = info ? CAT[info.cat].color : '#555';
+      const y = 4 + r * ROW_H, info = library.get(state.pads[pad].sound), m = state.mutes[pad], col = info ? CAT[info.cat].color : '#555';
       g.globalAlpha = m ? 0.35 : 1;
-      g.fillRect(4, y + 7, 7, 7);
-      g.fillStyle = m ? '#ffcf6b' : '#c9ccd8';
-      g.fillText(m ? `${pad + 1}. MUTED` : `${pad + 1}. ${info ? info.name : 'Empty'}`.slice(0, 18), 16, y + ROW_H / 2);
+      g.fillStyle = col; g.shadowColor = col; g.shadowBlur = m ? 0 : 6;
+      g.beginPath(); g.arc(10, y + ROW_H / 2, 3.5, 0, Math.PI * 2); g.fill();
+      g.shadowBlur = 0;
+      g.fillStyle = m ? '#ffc23d' : '#a39e94';
+      g.fillText((m ? `${String(pad + 1).padStart(2, '0')} MUTED` : `${String(pad + 1).padStart(2, '0')} ${info ? info.name : 'Empty'}`).toUpperCase().slice(0, 20), 20, y + ROW_H / 2 + 1);
       g.globalAlpha = 1;
-      g.fillStyle = '#ffffff08'; g.fillRect(LABEL_W, y + ROW_H - 1, w - LABEL_W, 1);
     });
+    // Hits light their step key in the sound's colour; harder hits glow brighter.
     for (const e of pat().events) {
       if (e.beat >= L) continue;
       const r = rows.indexOf(e.pad);
       if (r < 0) continue;
-      const info = library.get(state.pads[e.pad].sound), x = LABEL_W + e.beat * 4 * cw, y = 4 + r * ROW_H + 4;
-      const long = state.pads[e.pad].hold ? Math.max(cw - 2, e.dur * 4 * cw - 2) : Math.max(4, cw - 3);
-      g.globalAlpha = (state.mutes[e.pad] ? 0.25 : 1) * (0.45 + 0.55 * (e.vel / 127));
-      g.fillStyle = info ? CAT[info.cat].color : '#888';
-      g.beginPath(); g.roundRect(x + 1, y, Math.min(long, w - x - 2), ROW_H - 8, 3); g.fill();
+      const info = library.get(state.pads[e.pad].sound), col = info ? CAT[info.cat].color : '#888';
+      const x = LABEL_W + e.beat * 4 * cw, y = 4 + r * ROW_H + 3;
+      const long = state.pads[e.pad].hold ? Math.max(cw - gap, e.dur * 4 * cw - gap) : Math.max(4, cw - gap);
+      const hot = Math.floor(e.beat * 4) === playStep;
+      g.globalAlpha = (state.mutes[e.pad] ? 0.25 : 1) * (0.5 + 0.5 * (e.vel / 127));
+      g.fillStyle = col; g.shadowColor = col; g.shadowBlur = state.mutes[e.pad] ? 0 : hot ? 16 : 7;
+      g.beginPath(); g.roundRect(x + gap / 2, y, Math.min(long, w - x - 2), ROW_H - 6, 2); g.fill();
+      g.shadowBlur = 0;
+      if (hot) { g.globalAlpha = 0.55; g.fillStyle = '#fff'; g.beginPath(); g.roundRect(x + gap / 2, y, Math.min(long, w - x - 2), ROW_H - 6, 2); g.fill(); }
       g.globalAlpha = 1;
     }
-    if (seq.playing && seq.seg && seq.seg.pat === state.pat) {
-      const pos = posNow();
-      if (pos >= seq.seg.start) {
-        const x = LABEL_W + clamp(pos - seq.seg.start, 0, L) * 4 * cw;
-        g.fillStyle = seq.recording ? '#ff3b4e' : '#ffffff'; g.fillRect(x, 2, 2, rows.length * ROW_H + 4);
-      }
+    if (playStep >= 0) {
+      const x = LABEL_W + clamp(posNow() - seq.seg.start, 0, L) * 4 * cw, c = seq.recording ? '#ff2e3f' : '#ff6a1a';
+      g.fillStyle = c; g.shadowColor = c; g.shadowBlur = 10;
+      g.fillRect(x - 1, 1, 2, rows.length * ROW_H + 6);
+      g.shadowBlur = 0;
     }
   }
   function loopClick(e) {
@@ -1815,15 +1919,15 @@
       cv.width = w * dpr; cv.height = h * dpr;
       const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
       const d = buf.getChannelData(0), step = Math.max(1, Math.floor(d.length / w));
-      g.fillStyle = '#7c6cff';
+      g.fillStyle = '#6af7dc';
       for (let x = 0; x < w; x++) {
         let pk = 0; for (let i = x * step; i < (x + 1) * step && i < d.length; i++) pk = Math.max(pk, Math.abs(d[i]));
         g.fillRect(x, h / 2 - pk * h * 0.45, 1, Math.max(1, pk * h * 0.9));
       }
-      g.font = '11px system-ui'; g.textBaseline = 'top';
+      g.font = '12px "Share Tech Mono", monospace'; g.textBaseline = 'top';
       slices.forEach(([s], i) => {
         const x = s / buf.duration * w;
-        g.fillStyle = '#ff4fd8'; g.fillRect(x, 0, 2, h);
+        g.fillStyle = '#ff6a1a'; g.fillRect(x, 0, 2, h);
         g.fillStyle = '#fff'; g.fillText(String(i + 1), x + 4, 4);
       });
       info.textContent = `${slices.length} slice${slices.length === 1 ? '' : 's'}. Click the picture to hear a slice. Slices go on pads 1 to ${slices.length}.`;
@@ -2293,6 +2397,21 @@
       ok(biggest > 0 && biggest <= 512 && at(2, 0) === '250,250,0' && at(3, 0) === '250,250,0', `lights: over Bluetooth the restore fits 512-byte writes (${biggest})`);
       L.attach(null);
     }
+    {
+      // The knobs turn the real settings, and the display follows the pattern and the beat.
+      const input = $('#master-space'), knob = input.closest('.ctrl').querySelector('.knob'), before = state.master.space;
+      knob.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+      ok(state.master.space > before && +input.value === state.master.space, `ui: scrolling a knob turns it (${before} to ${state.master.space})`);
+      knob.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      ok(state.master.space === before, 'ui: double-clicking a knob resets it');
+      choosePattern(2); updateDisplay();
+      ok($('#dPat').textContent === 'C' && $('#dMode').textContent === 'STOP' && $('#dPos').textContent === '-.-.-', 'ui: the display shows the pattern when stopped');
+      choosePattern(0);
+      play(false); await sleep(400); updateDisplay();
+      ok(/^[1-4]\.[1-4]\.[1-4]$/.test($('#dPos').textContent) && $('#dMode').textContent === 'LOOP' && $('#dPat').textContent === 'A', `ui: the display counts bars, beats and steps while playing (${$('#dPos').textContent} ${$('#dMode').textContent})`);
+      stop(); updateDisplay();
+      ok($('#dMode').textContent === 'STOP', 'ui: the display shows STOP after stopping');
+    }
     const fails = out.filter(l => l.startsWith('FAIL')).length;
     const pre = $('#selftest');
     pre.hidden = false;
@@ -2341,6 +2460,8 @@
     renderAll();
     preloadKit();
     initMidi();
+    displayLoop();
+    if (document.fonts) document.fonts.ready.then(() => drawLoop());
     // Closing: put the pad's own colours back. A Bluetooth write still needs the browser for
     // a moment after the page lets go of it, so the page waits briefly before closing.
     let closing = false;
