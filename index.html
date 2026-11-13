@@ -79,7 +79,7 @@
       <div id="muteBanner" class="banner mute" hidden>Mute mode: hit a pad to mute or unmute it in the loop. <span class="grow"></span><button class="btn sm" id="muteDone">Done</button></div>
       <div id="presetKeys" class="presets" aria-label="Pad presets"></div>
       <div id="grid" class="grid"></div>
-      <p class="hint">Hit harder for louder. Keyboard: <kbd>1</kbd>–<kbd>4</kbd> <kbd>Q</kbd>–<kbd>R</kbd> <kbd>A</kbd>–<kbd>F</kbd> <kbd>Z</kbd>–<kbd>V</kbd>, <kbd>Shift</kbd> for full force, <kbd>Esc</kbd> stops all sound.</p>
+      <p class="hint">Hit harder for louder. Keyboard: <kbd>1</kbd>–<kbd>4</kbd> <kbd>Q</kbd>–<kbd>R</kbd> <kbd>A</kbd>–<kbd>F</kbd> <kbd>Z</kbd>–<kbd>V</kbd>, <kbd>Shift</kbd> for full force, <kbd>Esc</kbd> stops all sound. Right-click a pad to pick it without playing it.</p>
     </section>
 
     <aside class="panel" id="panel">
@@ -94,6 +94,11 @@
           <button id="editWobBtn" class="btn sm" hidden>Edit wobble</button>
         </div>
       </div>
+      <div class="ctl-row" id="ctlRow" title="A pad can play its sound or work a control, like note repeat, latch, presets or swing">
+        <label class="field"><span>Pad does</span><select id="ctlSel" aria-label="What this pad does"></select></label>
+      </div>
+      <p class="ctl-help" id="ctlHelp" hidden></p>
+      <div class="contents" id="soundCtrls">
       <div class="ctrls" id="padCtrls"></div>
       <div class="toggles">
         <button id="holdBtn" class="btn toggle" title="The sound keeps playing while you hold the pad and stops when you let go">Hold</button>
@@ -104,6 +109,7 @@
       <div class="notes-opts" id="notesOpts" hidden>
         <label class="field"><span>Scale</span><select id="scaleSel"></select></label>
         <label class="field"><span>Key</span><select id="rootSel"></select></label>
+      </div>
       </div>
 
       <h3>Master</h3>

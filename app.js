@@ -349,8 +349,9 @@
   let sel = 0, muteMode = false;
   // Your kits: 16 pads saved under a name, next to the ready-made kits. id -> { name, bpm, pads }
   const userKits = store.get('kits', {});
-  // The pad's four presets (Shift + pads 13-16 on the Pocket) each hold a kit. slots[n] is
-  // { kit: { id, name }, pads } as you left it, so edits stay with their preset.
+  // The pad's four presets each hold a kit (the Pocket picks its preset when it is switched on
+  // with pad 13-16 held). slots[n] is { kit: { id, name }, pads } as you left it, so edits stay
+  // with their preset.
   const padPresets = Object.assign({ follow: true, slot: 0, slots: null }, store.get('presets', {}));
   const savePresets = () => store.set('presets', padPresets);
   const currentSlot = () => ({ kit: { id: state.kit.id, name: state.kit.name }, pads: state.pads.map(p => Object.assign({}, p)) });
@@ -497,6 +498,7 @@
   function silence() {
     for (const v of live.voices) live.cut(v, 0);
     for (const [k, h] of [...held]) padUp(h.grid, k[0]);
+    for (const i of [...latched.keys()]) unlatch(i);
     repeats.clear();
   }
   function stop() {
@@ -595,6 +597,157 @@
     }
   }
 
+  // ---------------------------------------------------------------- pad controls
+  // Any pad can work a control instead of playing its sound, like the pad's own control mode.
+  // Controls belong to the pads, not the kit: they stay put when you switch kits or presets,
+  // and the kit keeps the pad's sound for when you set it back. [id, name, what it does, held?]
+  const CONTROLS = [
+    ['Note repeat', [
+      ['repHold', 'Repeat (hold)', 'Hold this pad and hit others: they repeat in time while you hold them.', true],
+      ['repToggle', 'Repeat on/off', 'Turns note repeat on and off. Then holding any pad repeats it in time.'],
+      ['repNext', 'Repeat rate', 'Steps note repeat through 1/8, 1/16, 1/16T, 1/32 and off.'],
+    ]],
+    ['Latch', [
+      ['latch', 'Latch', 'While latch is on, held sounds and repeats keep going when you let go. Hit that pad again to stop it.'],
+      ['stopAll', 'Stop all sound', 'Stops every sound that is playing, latched ones too. The beat keeps going.'],
+    ]],
+    ['Presets (kits)', [
+      ...[0, 1, 2, 3].map(n => ['preset' + n, `Preset ${n + 1}`, `Switches to preset ${n + 1} and the kit on it.`]),
+      ['presetNext', 'Next preset', 'Switches to the next of the four presets.'],
+      ['presetPrev', 'Previous preset', 'Switches to the previous preset.'],
+    ]],
+    ['Patterns', [
+      ['patNext', 'Next pattern', 'Goes to the next pattern with hits in it. While the beat plays, it switches at the end of the pass.'],
+      ['patPrev', 'Previous pattern', 'Goes to the previous pattern with hits in it.'],
+    ]],
+    ['Groove and tempo', [
+      ['swing', 'Swing', 'Steps swing through straight, 54%, 58%, 62% and 66%.'],
+      ['tap', 'Tap tempo', 'Hit it in time, three times or more, to set the tempo.'],
+      ['click', 'Metronome', 'Turns the click on and off.'],
+    ]],
+    ['Transport', [
+      ['play', 'Play / stop', 'Starts and stops the beat.'],
+      ['rec', 'Record', 'Starts recording with a count-in, or turns recording on and off while playing.'],
+      ['undo', 'Undo', 'Takes back the last change to the patterns.'],
+      ['mute', 'Mute (hold)', 'Hold this pad and hit others to mute or unmute them in the beat.', true],
+    ]],
+  ];
+  const CTL = Object.fromEntries(CONTROLS.flatMap(([, list]) => list.map(([id, name, help, hold]) => [id, { id, name, help, hold: !!hold }])));
+  const controls = (a => Array.from({ length: 16 }, (_, i) => CTL[a[i]] ? a[i] : null))(Array.isArray(store.get('controls')) ? store.get('controls') : []);
+  const SWINGS = [0.5, 0.54, 0.58, 0.62, 0.66];
+  let latch = false, lastRate = 0.25, repHeld = 0, repBefore = 0;
+  const latched = new Map();
+  const rateName = v => (REPEATS.find(([r]) => Math.abs(r - v) < 1e-9) || [0, 'Off'])[1];
+  const shortKit = name => name.replace(/ \(edited\)$/, '').split(/ \/ | \(/)[0] + (/ \(edited\)$/.test(name) ? '*' : '');
+  function setControl(i, id) {
+    for (const [k, h] of [...held]) if (h.grid === i) padUp(i, k[0]);
+    unlatch(i);
+    controls[i] = CTL[id] ? id : null;
+    store.set('controls', controls);
+    renderPads(); renderPanel(); renderPresetKeys();
+  }
+  function setRepeat(v) {
+    state.repeat = v;
+    if (v) lastRate = v;
+    segs.forEach(f => f());
+  }
+  // Pads you are already holding start repeating when repeat comes on.
+  function repeatHeld() {
+    for (const h of held.values()) if (!h.ctl && !h.repeat && state.repeat > 0) { if (h.voice) live.cut(h.voice, 0); h.voice = null; h.repeat = startRepeat(h); }
+  }
+  function stepPattern(dir) {
+    const cur = seq.playing ? seq.queued ?? (seq.seg ? seq.seg.pat : state.pat) : state.pat;
+    const used = state.patterns.map((p, k) => p.events.length ? k : -1).filter(k => k >= 0);
+    const pool = used.some(k => k !== cur) ? used : [...Array(PATS).keys()];
+    for (let s = 1; s <= PATS; s++) {
+      const k = mod(cur + dir * s, PATS);
+      if (pool.includes(k)) { choosePattern(k); return toast(`Pattern ${LETTERS[k]}` + (seq.playing && seq.queued === k ? ' next' : '')); }
+    }
+  }
+  function ctlDown(id) {
+    const pre = /^preset(\d)$/.exec(id);
+    if (pre || id === 'presetNext' || id === 'presetPrev') {
+      const n = pre ? +pre[1] : mod(padPresets.slot + (id === 'presetNext' ? 1 : -1), 4);
+      goSlot(n);
+      toast(`Preset ${n + 1}: ${state.kit.name}`);
+    } else switch (id) {
+      case 'repHold': if (!repHeld++) { repBefore = state.repeat; if (!state.repeat) setRepeat(lastRate); repeatHeld(); } break;
+      case 'repToggle': setRepeat(state.repeat ? 0 : lastRate); repeatHeld(); toast(state.repeat ? `Repeat ${rateName(state.repeat)}` : 'Repeat off'); break;
+      case 'repNext': {
+        const k = REPEATS.findIndex(([r]) => Math.abs(r - state.repeat) < 1e-9);
+        setRepeat(REPEATS[(k + 1) % REPEATS.length][0]); repeatHeld();
+        toast(state.repeat ? `Repeat ${rateName(state.repeat)}` : 'Repeat off');
+        break;
+      }
+      case 'latch':
+        latch = !latch;
+        if (!latch) for (const i of [...latched.keys()]) unlatch(i);
+        toast(latch ? 'Latch on: held sounds keep going until you hit the pad again' : 'Latch off');
+        break;
+      case 'stopAll': silence(); break;
+      case 'patNext': stepPattern(1); break;
+      case 'patPrev': stepPattern(-1); break;
+      case 'swing': {
+        const v = SWINGS.find(x => x > state.master.swing + 0.005) ?? SWINGS[0];
+        state.master.swing = v; applyMaster(); setCtrl('master', 'swing', v); dirty();
+        toast(v < 0.505 ? 'Swing off (straight)' : `Swing ${Math.round(v * 100)}%`);
+        break;
+      }
+      case 'tap': tapTempo(); break;
+      case 'click': state.click = !state.click; updateTransport(); dirty(); break;
+      case 'play': togglePlay(); break;
+      case 'rec': toggleRec(); break;
+      case 'undo': undo(); break;
+      case 'mute': setMuteMode(true); break;
+    }
+    ctlRefresh();
+  }
+  function ctlUp(id) {
+    if (id === 'repHold' && repHeld > 0 && --repHeld === 0 && !repBefore) {
+      setRepeat(0);
+      for (const h of held.values()) if (h.repeat) { repeats.delete(h.repeat); h.repeat = null; }
+    }
+    if (id === 'mute') setMuteMode(false);
+    ctlRefresh();
+  }
+  // What a control pad shows: is it on, and a word or two under its name.
+  function ctlState(id) {
+    const pre = /^preset(\d)$/.exec(id);
+    if (pre) {
+      const n = +pre[1], s = padPresets.slots && padPresets.slots[n];
+      return [padPresets.slot === n, shortKit(n === padPresets.slot ? state.kit.name : s ? s.kit.name : '')];
+    }
+    switch (id) {
+      case 'repHold': return [repHeld > 0, rateName(state.repeat || lastRate)];
+      case 'repToggle': case 'repNext': return [state.repeat > 0, rateName(state.repeat)];
+      case 'latch': return [latch, latch ? 'On' : 'Off'];
+      case 'swing': return [state.master.swing > 0.505, state.master.swing < 0.505 ? 'Straight' : Math.round(state.master.swing * 100) + '%'];
+      case 'tap': return [false, state.bpm + ' BPM'];
+      case 'click': return [state.click, state.click ? 'On' : 'Off'];
+      case 'play': return [seq.playing, seq.playing ? 'Playing' : 'Stopped'];
+      case 'rec': return [seq.recording, seq.recording ? 'Recording' : 'Off'];
+      case 'mute': return [muteMode, 'Hold + hit pads'];
+      case 'patNext': case 'patPrev': return [false, 'Pattern ' + LETTERS[seq.queued ?? state.pat]];
+      case 'presetNext': case 'presetPrev': return [false, 'Preset ' + (padPresets.slot + 1)];
+      default: return [false, CTL[id].hold ? 'Hold' : 'Control'];
+    }
+  }
+  // Keeps the control pads (and their lights) up to date; cheap enough to run every frame.
+  let ctlSig = '';
+  function ctlRefresh() {
+    let sig = '';
+    for (let i = 0; i < 16; i++) {
+      const id = controls[i], pad = padEls[i];
+      if (!id || !pad || !pad.classList.contains('ctl')) continue;
+      const [on, text] = ctlState(id);
+      sig += i + (on ? '+' : '-');
+      pad.classList.toggle('on', on);
+      const cat = pad.querySelector('.cat');
+      if (cat.textContent !== text) cat.textContent = text;
+    }
+    if (sig !== ctlSig) { ctlSig = sig; lights.setPads(padLightList()); }
+  }
+
   // ---------------------------------------------------------------- playing pads
   const held = new Map();
   function noteSemis(i) {
@@ -616,8 +769,18 @@
   function padDown(i, vel, source) {
     if (ctx.state !== 'running') ctx.resume();
     if (lightPick) lightPick(i);
-    if (muteMode && !state.notes) { toggleMute(i); flashPad(i, 60); return; }
     const key = source + i;
+    if (controls[i]) {
+      if (held.has(key)) return;
+      held.set(key, { ctl: controls[i], grid: i });
+      padEls[i] && padEls[i].classList.add('held');
+      flashPad(i, 90);
+      ctlDown(controls[i]);
+      return;
+    }
+    if (muteMode && !state.notes) { toggleMute(i); flashPad(i, 60); return; }
+    // With latch on, hitting a pad that is still going stops it.
+    if (latched.has(i)) { unlatch(i); return; }
     if (held.has(key)) padUp(i, source);
     const notes = state.notes;
     const h = { pad: notes ? notes.src : i, semis: notes ? noteSemis(i) : 0, vel, grid: i };
@@ -636,10 +799,23 @@
     const key = source + i, h = held.get(key);
     if (!h) return;
     held.delete(key);
-    if (![...held.values()].some(x => x.grid === i)) padEls[i] && padEls[i].classList.remove('held');
+    // Latch keeps a held sound or a repeat going after you let go.
+    if (!h.ctl && latch && (h.repeat || (h.voice && h.voice.hold)) && !latched.has(i)) { latched.set(i, h); return; }
+    if (![...held.values()].some(x => x.grid === i) && !latched.has(i)) padEls[i] && padEls[i].classList.remove('held');
+    if (h.ctl) return ctlUp(h.ctl);
+    endHit(h);
+  }
+  function endHit(h) {
     if (h.voice && h.voice.hold) live.release(h.voice);
     if (h.ev) finishHit(h.ev);
     if (h.repeat) repeats.delete(h.repeat);
+  }
+  function unlatch(i) {
+    const h = latched.get(i);
+    if (!h) return;
+    latched.delete(i);
+    endHit(h);
+    if (![...held.values()].some(x => x.grid === i)) padEls[i] && padEls[i].classList.remove('held');
   }
 
   // ---------------------------------------------------------------- MIDI in
@@ -709,6 +885,8 @@
         e.preventDefault(); pad.setPointerCapture(e.pointerId); padDown(i, 105, 'p');
       });
       const up = () => padUp(i, 'p');
+      // Right-click picks a pad to change without playing it (or working its control).
+      pad.addEventListener('contextmenu', e => { e.preventDefault(); if (!state.notes) select(i); });
       pad.addEventListener('pointerup', up);
       pad.addEventListener('pointercancel', up);
       pad.addEventListener('dragover', e => { e.preventDefault(); pad.classList.add('drop'); });
@@ -929,7 +1107,7 @@
           if (session() && performance.now() - lastPoll > (want.size ? 700 : 300)) {
             const g = await readRegion(4, 0, 12);
             lastPoll = performance.now();
-            // Byte 10 is the preset (Shift + a preset pad), told at once; the rest waits for the re-read.
+            // Byte 10 is the preset (chosen when the pad is switched on), told at once; the rest waits for the re-read.
             if (g && g[10] !== glob[10] && g[10] < 4) { preset = g[10]; onPreset(preset); }
             if (!g || g.some((b, i) => b !== glob[i])) ready = false;
             continue;
@@ -1087,6 +1265,8 @@
     const notes = state.notes;
     return padEls.map((_, i) => {
       if (lightOpts.mode === 'own') return { own: true, level: 1 };
+      // Control pads glow orange: dim, and bright while their control is on.
+      if (controls[i]) return { base: '#ff6a1a', level: ctlState(controls[i])[0] ? 1 : Math.min(1, lightOpts.bright * 0.8) };
       const p = notes ? state.pads[notes.src] : state.pads[i], info = p.sound && library.get(p.sound);
       const root = notes && mod(noteSemis(i) - notes.root, 12) === 0;
       const level = Math.min(1, notes ? lightOpts.bright * (root ? 1.8 : 0.7) : state.mutes[i] ? 0 : lightOpts.bright);
@@ -1098,7 +1278,17 @@
     const notes = state.notes;
     for (let i = 0; i < 16; i++) {
       const pad = padEls[i], p = notes ? state.pads[notes.src] : state.pads[i];
-      const info = p.sound && library.get(p.sound);
+      const info = p.sound && library.get(p.sound), c = controls[i] && CTL[controls[i]];
+      pad.classList.toggle('ctl', !!c);
+      if (c) {
+        pad.style.setProperty('--c', '#ff6a1a');
+        for (const k of ['empty', 'note', 'muted']) pad.classList.remove(k);
+        pad.classList.toggle('sel', !notes && i === sel);
+        pad.querySelector('.name').textContent = c.name;
+        pad.querySelector('.badges').replaceChildren(el('b', { class: 'fn', title: 'This pad works a control. Right-click it, then change Pad does.' }, 'CTRL'));
+        continue;
+      }
+      pad.classList.remove('on');
       pad.style.setProperty('--c', info ? CAT[info.cat].color : '#555');
       pad.classList.toggle('empty', !info);
       pad.classList.toggle('sel', !notes && i === sel);
@@ -1119,7 +1309,8 @@
         pad.querySelector('.badges').replaceChildren(...b);
       }
     }
-    lights.setPads(padLightList());
+    ctlSig = '';
+    ctlRefresh();
   }
   function flashPad(i, vel, beat) {
     const pad = padEls[i];
@@ -1216,6 +1407,9 @@
     cut.append(el('option', { value: 0 }, 'None'), ...[1, 2, 3, 4].map(n => el('option', { value: n }, 'Group ' + n)));
     cut.onchange = () => { state.pads[target()].cut = +cut.value; renderPads(); dirty(); };
     $('#changeBtn').onclick = openBrowser;
+    const cs = $('#ctlSel');
+    cs.append(el('option', { value: '' }, 'Play its sound'), ...CONTROLS.map(([label, list]) => el('optgroup', { label }, ...list.map(([id, name]) => el('option', { value: id }, name)))));
+    cs.onchange = () => setControl(sel, cs.value);
     $('#editWobBtn').onclick = wobbleDialog;
     $('#notesBtn').onclick = () => {
       if (state.notes) state.notes = null;
@@ -1232,7 +1426,20 @@
   }
   function renderPanel() {
     const notes = state.notes, i = target(), p = state.pads[i];
-    const info = p.sound && library.get(p.sound);
+    const info = p.sound && library.get(p.sound), c = !notes && controls[i] && CTL[controls[i]];
+    $('#ctlRow').hidden = !!notes;
+    $('#ctlSel').value = c ? c.id : '';
+    $('#soundCtrls').hidden = !!c;
+    $('#changeBtn').hidden = !!c;
+    $('#ctlHelp').hidden = !c;
+    if (c) {
+      $('#padTitle').textContent = `Pad ${i + 1} · key ${KEY_LABEL[i]} · control`;
+      $('#soundName').textContent = c.name;
+      $('#soundMeta').replaceChildren(el('i', { style: 'background:#ff6a1a;color:#ff6a1a' }), c.hold ? 'Control · hold the pad' : 'Control · hit the pad');
+      $('#editWobBtn').hidden = true;
+      $('#ctlHelp').textContent = c.help + (info ? ` The kit keeps this pad's sound (${info.name}): choose Play its sound to get it back.` : '');
+      return;
+    }
     $('#padTitle').textContent = `Pad ${i + 1} · key ${KEY_LABEL[i]}` + (notes ? ' · notes mode' : '');
     $('#soundName').textContent = info ? info.name : 'No sound yet';
     const meta = $('#soundMeta');
@@ -1335,24 +1542,25 @@
     segs.push(refresh);
     return refresh;
   }
+  const taps = [];
+  function tapTempo() {
+    const t = performance.now();
+    if (taps.length && t - taps[taps.length - 1] > 2000) taps.length = 0;
+    taps.push(t);
+    if (taps.length > 6) taps.shift();
+    if (taps.length >= 3) setBpm(Math.round(60000 / ((taps[taps.length - 1] - taps[0]) / (taps.length - 1))));
+  }
   function buildTransport() {
     $('#playBtn').onclick = togglePlay;
     $('#recBtn').onclick = toggleRec;
     seg('#barsSeg', BARS.map(b => [b, b + (b === 1 ? ' bar' : ' bars')]), () => pat().bars, setBars);
     seg('#snapSeg', SNAPS, () => state.snap, v => { state.snap = v; dirty(); });
-    seg('#repSeg', REPEATS, () => state.repeat, v => { state.repeat = v; });
+    seg('#repSeg', REPEATS, () => state.repeat, setRepeat);
     const inp = $('#bpmIn');
     inp.onchange = () => setBpm(+inp.value);
     $('#bpmDown').onclick = () => setBpm(state.bpm - 1);
     $('#bpmUp').onclick = () => setBpm(state.bpm + 1);
-    const taps = [];
-    $('#tapBtn').onclick = () => {
-      const t = performance.now();
-      if (taps.length && t - taps[taps.length - 1] > 2000) taps.length = 0;
-      taps.push(t);
-      if (taps.length > 6) taps.shift();
-      if (taps.length >= 3) setBpm(Math.round(60000 / ((taps[taps.length - 1] - taps[0]) / (taps.length - 1))));
-    };
+    $('#tapBtn').onclick = tapTempo;
     $('#clickBtn').onclick = () => { state.click = !state.click; updateTransport(); dirty(); };
     $('#undoBtn').onclick = undo;
     $('#clearBtn').onclick = () => {
@@ -1564,6 +1772,7 @@
     if (document.hidden) return;
     updateDisplay();
     drawScope();
+    ctlRefresh();
   }
 
   // ---------------------------------------------------------------- UI: loop view
@@ -1780,13 +1989,25 @@
     presetBtns.forEach((b, n) => {
       const s = padPresets.slots[n], on = n === padPresets.slot, name = on ? state.kit.name : s.kit.name;
       // Short on the key: "Riddim / neuro (edited)" shows as "Riddim*".
-      const short = name.replace(/ \(edited\)$/, '').split(/ \/ | \(/)[0] + (/ \(edited\)$/.test(name) ? '*' : '');
-      const here = lights.linked && padPreset === n;
+      const short = shortKit(name), here = lights.linked && padPreset === n;
       b.setAttribute('aria-pressed', String(on));
       b.classList.toggle('here', here);
       b.querySelector('.kname').textContent = short;
-      b.title = `Preset ${n + 1}: ${name}. On your pad: hold Shift and press pad ${13 + n}.` + (here ? ' Your pad is on this preset.' : '');
+      b.title = `Preset ${n + 1}: ${name}. ${presetHow(n)}.` + (here ? ' Your pad is on this preset.' : '');
     });
+  }
+  // How to reach preset n from the pad: a control pad set to it, or power-on with pad 13-16 held.
+  function presetHow(n) {
+    const k = controls.indexOf('preset' + n);
+    return k >= 0 ? `On your pad: hit pad ${k + 1}` : `On your pad: hold pad ${13 + n} while you switch it on`;
+  }
+  const presetPads = () => [0, 1, 2, 3].every(n => controls[12 + n] === 'preset' + n);
+  function togglePresetPads() {
+    const on = !presetPads();
+    [0, 1, 2, 3].forEach(n => { controls[12 + n] = on ? 'preset' + n : null; });
+    store.set('controls', controls);
+    renderPads(); renderPanel(); renderPresetKeys();
+    toast(on ? 'Pads 13 to 16 now switch presets' : 'Pads 13 to 16 play their sounds again');
   }
   const beats = () => store.get('beats', {});
   function buildBeatMenu() {
@@ -2303,7 +2524,7 @@
       el('div', { class: 'lights-head' }, el('h2', {}, 'Pad lights'), onBtn),
       el('div', { class: 'lights-status' }, status, connectBtn),
       el('div', { class: 'form' }, modeRow, el('div', { class: 'form-row' }, el('span', {}, 'Pads'), grid), mineRow, brightRow, flashRow, beatRow, whiteRow),
-      el('small', {}, 'Thump never saves anything to your pad: its own colors come back when Thump closes or the lights are off. Switch presets on the pad (hold Shift and press pad 13 to 16) and the lights follow.'),
+      el('small', {}, 'Thump never saves anything to your pad: its own colors come back when Thump closes or the lights are off. Switch the pad on in another preset (hold pad 13 to 16 while switching it on) and the lights follow.'),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Done')));
     modalCleanup = () => { lightsUi = () => { }; lightPick = null; };
     paint();
@@ -2350,8 +2571,11 @@
     const rows = [0, 1, 2, 3].map(n => {
       const key = el('button', { class: 'pkey', title: 'Switch to this preset', onclick: () => { goSlot(n); paint(); } }, el('i'), el('b', {}, 'P' + (n + 1)));
       const pick = el('select', { 'aria-label': `Kit on preset ${n + 1}`, onchange: e => { assignSlot(n, e.target.value); paint(); } });
-      const row = el('div', { class: 'slot-row' }, key, el('span', { class: 'slot-hint' }, `Shift + pad ${13 + n}`), pick);
+      const hint = el('span', { class: 'slot-hint' });
+      const row = el('div', { class: 'slot-row' }, key, hint, pick);
       row.paint = () => {
+        const k = controls.indexOf('preset' + n);
+        hint.textContent = k >= 0 ? `Pad ${k + 1}` : `Pad ${13 + n} at power-on`;
         const kit = n === padPresets.slot ? state.kit : padPresets.slots[n].kit;
         key.setAttribute('aria-pressed', String(n === padPresets.slot));
         key.classList.toggle('here', lights.linked && padPreset === n);
@@ -2365,11 +2589,13 @@
       if (!edited.length) { fillSlots(ids); return paint(); }
       confirmDialog(`Put new kits on all four presets? Your changes to ${edited.map(k => `"${k.name}"`).join(', ')} are lost unless you save them as a kit first.`, 'Fill presets', () => { fillSlots(ids); kitsDialog(); });
     };
+    const padsBtn = el('button', { class: 'btn toggle', title: 'Pads 13 to 16 switch between the four presets while you play, instead of playing sounds', onclick: () => { togglePresetPads(); paint(); } }, 'Pads 13 to 16 switch presets');
     const fillRow = el('div', { class: 'fill-row' });
     const mineBox = el('div', { class: 'kit-list' });
     const paint = () => {
       followBtn.setAttribute('aria-pressed', String(padPresets.follow));
       followBtn.textContent = padPresets.follow ? 'Follow the pad: on' : 'Follow the pad: off';
+      padsBtn.setAttribute('aria-pressed', String(presetPads()));
       status.textContent = followText();
       const btPad = midi && [...midi.inputs.values()].some(i => i.state === 'connected' && isPad(i.name) && isBt(i.name));
       connectBtn.hidden = !(padPresets.follow && btPad && navigator.bluetooth && lights.status === 'nopad' && !btBusy);
@@ -2388,10 +2614,11 @@
     kitsUi = () => { status.textContent = followText(); rows.forEach(r => r.paint()); };
     openModal(
       el('div', { class: 'lights-head' }, el('h2', {}, 'Kits'), followBtn),
-      el('p', {}, 'Your pad has four presets: hold Shift and press pad 13, 14, 15 or 16. Each one holds a kit, and Thump switches to it when you do. The keys above the pads switch presets too.'),
+      el('p', {}, 'Your pad has four presets, and each one holds a kit here. The pad picks its preset when you switch it on with pad 13, 14, 15 or 16 held, and Thump follows. To switch while you play, let pads 13 to 16 do it (or set any pad to a preset under Pad does). The keys above the pads switch presets too.'),
       el('div', { class: 'lights-status' }, status, connectBtn),
       el('h3', {}, 'Pad presets'),
       el('div', { class: 'slots' }, ...rows),
+      el('div', { class: 'row', style: 'justify-content:flex-start' }, padsBtn),
       fillRow,
       el('h3', {}, 'Your kits'),
       mineBox,
@@ -2437,7 +2664,8 @@
         el('li', {}, 'Sweep the master Filter down before a drop and back to Off when it hits.'),
         el('li', {}, 'Record with mic: bang on metal for industrial hits. Chop a long sound: put a vocal or loop across the pads.'),
         el('li', {}, 'Lights (top bar) sets your pad\'s colors: sound colors, your own, or the pad\'s own, with flashes as pads play. Works over USB or Bluetooth.'),
-        el('li', {}, 'Your pad has four presets (hold Shift and press pad 13 to 16), and Thump puts a kit on each. Kits (top bar) chooses them and saves your own kits.')),
+        el('li', {}, 'Your pad has four presets (hold pad 13 to 16 while you switch it on), and Thump puts a kit on each. Kits (top bar) chooses them and saves your own kits.'),
+        el('li', {}, 'Any pad can work a control instead of a sound: right-click it, then choose under Pad does. Note repeat, latch, presets, patterns, swing, tap tempo, play and record.')),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Got it')));
   }
   let modalCleanup = null;
@@ -2683,7 +2911,7 @@
       ok(biggest > 0 && biggest <= 512 && at(2, 0) === '250,250,0' && at(3, 0) === '250,250,0', `lights: over Bluetooth the restore fits 512-byte writes (${biggest})`);
       L.attach(null);
 
-      // Following the pad's presets: Shift + pad 14 on the pad puts it on preset 2.
+      // Following the pad's presets: switched on with pad 14 held, the pad is on preset 2.
       const seen = [], atp = (pr, g, i) => at(0, pr * POCKET.preset / POCKET.rec + g * 16 + i);
       let lightsOn2 = true;
       const L2 = makeLights({ enabled: () => lightsOn2, session: () => true, key: null, onPreset: n => seen.push(n) });
@@ -2733,6 +2961,92 @@
       padPreset = null;
       const k = kitDef(padPresets.slots[padPresets.slot].kit.id);
       if (k) loadKit(k.id); else loadKit('dubstep');
+    }
+    {
+      // Pad controls: a pad works note repeat, latch, presets, swing and more instead of a sound.
+      const keepCtl = controls.slice(), keepPresets = JSON.stringify(padPresets), keepPats = JSON.stringify(state.patterns), keepPat = state.pat;
+      const keepMaster = Object.assign({}, state.master), keepClick = state.click, keepMode = lightOpts.mode;
+      silence(); setRepeat(0); latch = false; lightOpts.mode = 'sound';
+      fillSlots(['dubstep', 'riddim', 'industrial', 'electro']); goSlot(0);
+      if (presetPads()) togglePresetPads();
+      togglePresetPads();
+      ok(presetPads() && padEls[13].classList.contains('ctl') && padEls[13].querySelector('.name').textContent === 'Preset 2', 'controls: pads 13 to 16 become preset keys');
+      const voices0 = live.voices.size;
+      padDown(13, 100, 'm'); padUp(13, 'm');
+      ok(padPresets.slot === 1 && state.kit.id === 'riddim' && live.voices.size === voices0, 'controls: pad 14 switches to preset 2 and plays no sound');
+      ok(padEls[13].classList.contains('on') && !padEls[12].classList.contains('on'), 'controls: the preset key you are on is lit');
+      const ll = padLightList();
+      ok(ll[13].base === '#ff6a1a' && ll[13].level === 1 && ll[12].level < 1, 'controls: on the pad, control pads glow orange, bright when on');
+      goSlot(2);
+      ok(controls[13] === 'preset1' && padEls[13].classList.contains('ctl') && padEls[14].classList.contains('on'), 'controls: control pads stay put when the kit changes');
+      ok(/hit pad 14/.test(presetBtns[1].title), `controls: the preset keys say which pad switches to them (${presetBtns[1].title})`);
+      togglePresetPads();
+      ok(!controls[13] && !padEls[13].classList.contains('ctl'), 'controls: pads 13 to 16 go back to their sounds');
+
+      setControl(15, 'repHold');
+      padDown(15, 100, 'k');
+      const rate = state.repeat;
+      padDown(0, 100, 'k');
+      const h0 = held.get('k0');
+      ok(rate > 0 && h0 && h0.repeat && repeats.has(h0.repeat), `controls: holding Repeat makes a pad repeat (${rateName(rate)})`);
+      padUp(15, 'k');
+      ok(state.repeat === 0 && !repeats.size, 'controls: letting go of Repeat stops the repeat');
+      padUp(0, 'k');
+      setControl(15, 'repNext');
+      const rates = [];
+      for (let k = 0; k < 5; k++) { padDown(15, 100, 'k'); padUp(15, 'k'); rates.push(rateName(state.repeat)); }
+      ok(rates.join() === '1/8,1/16,1/16T,1/32,Off', `controls: Repeat rate steps through the rates (${rates.join(' ')})`);
+
+      setControl(15, 'latch');
+      const keepPad1 = state.pads[1];
+      state.pads[1] = Object.assign({}, keepPad1, { sound: 'syn:wobble', hold: true });
+      await loadSound('syn:wobble');
+      padDown(15, 100, 'k'); padUp(15, 'k');
+      padDown(1, 100, 'k'); const v1 = held.get('k1').voice; padUp(1, 'k');
+      ok(latch && v1 && !v1.released && latched.has(1), 'controls: with Latch on, a held sound keeps going after you let go');
+      padDown(1, 100, 'k'); padUp(1, 'k');
+      ok(v1.released && !latched.has(1), 'controls: hitting a latched pad again stops it');
+      padDown(1, 100, 'k'); const v2 = held.get('k1').voice; padUp(1, 'k');
+      padDown(15, 100, 'k'); padUp(15, 'k');
+      ok(!latch && v2.released && !latched.size, 'controls: turning Latch off stops what was latched');
+      state.pads[1] = keepPad1;
+
+      setControl(15, 'swing'); state.master.swing = 0.5;
+      const sw = [];
+      for (let k = 0; k < 5; k++) { padDown(15, 100, 'k'); padUp(15, 'k'); sw.push(Math.round(state.master.swing * 100)); }
+      ok(sw.join() === '54,58,62,66,50' && +$('#master-swing').value === 0.5, `controls: Swing steps through the amounts (${sw.join(' ')})`);
+
+      state.patterns.forEach((p, k) => { p.events = k === 0 || k === 2 ? [{ pad: 0, beat: 0, vel: 100, semis: 0, dur: 0.25 }] : []; });
+      choosePattern(0); setControl(15, 'patNext');
+      padDown(15, 100, 'k'); padUp(15, 'k');
+      const p1 = state.pat;
+      padDown(15, 100, 'k'); padUp(15, 'k');
+      ok(p1 === 2 && state.pat === 0, `controls: Next pattern skips empty patterns (A to ${LETTERS[p1]} to ${LETTERS[state.pat]})`);
+
+      setControl(15, 'mute');
+      padDown(15, 100, 'k'); padDown(3, 100, 'k'); padUp(3, 'k');
+      const mutedNow = state.mutes[3], modeNow = muteMode;
+      padUp(15, 'k');
+      ok(modeNow && mutedNow && !muteMode, 'controls: hold Mute and hit a pad to mute it');
+      toggleMute(3);
+      setControl(15, 'click'); const c0 = state.click;
+      padDown(15, 100, 'k'); padUp(15, 'k');
+      ok(state.click === !c0, 'controls: Metronome turns the click on and off');
+
+      select(15);
+      ok($('#ctlSel').value === 'click' && $('#soundCtrls').hidden && !$('#ctlHelp').hidden && $('#soundName').textContent === 'Metronome', 'controls: the panel shows what a control pad does');
+      ok(store.get('controls')[15] === 'click', 'controls: pad controls are saved');
+      $('#ctlSel').value = ''; $('#ctlSel').dispatchEvent(new Event('change'));
+      ok(!controls[15] && !$('#soundCtrls').hidden && $('#ctlHelp').hidden, 'controls: Play its sound puts the sound back');
+
+      controls.splice(0, 16, ...keepCtl); store.set('controls', controls);
+      state.patterns = JSON.parse(keepPats); state.pat = keepPat;
+      Object.assign(state.master, keepMaster); state.click = keepClick; lightOpts.mode = keepMode;
+      setRepeat(0); latch = false; silence(); select(0);
+      Object.assign(padPresets, JSON.parse(keepPresets)); savePresets();
+      const k = kitDef(padPresets.slots[padPresets.slot].kit.id);
+      if (k) loadKit(k.id); else loadKit('dubstep');
+      applyMaster(); renderAll();
     }
     {
       // The spectrum: a quiet hi-hat lights the treble, and music's usual slope reads about level.

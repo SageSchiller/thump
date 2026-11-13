@@ -30,12 +30,19 @@ record: choose Allow.
   Electro, Trap, Drum machines, Hand drums, Heavy metal, Rock, Hip-hop, Classic 808).
 - **Your own kits**: change the sounds and settings on the pads, then save them as a kit
   (Kits in the top bar). Your kits sit next to the ready-made ones in the Kit list.
-- **Four presets, like the pad's**: the SMC-PAD Pocket has four presets (hold Shift and press
-  pad 13, 14, 15 or 16). Each holds a kit, and Thump switches kits when you switch presets on
-  the pad. The keys above the pads switch too. Put any kit on any preset in the Kits panel, or
+- **Four presets, like the pad's**: the SMC-PAD Pocket has four presets, picked by holding pad
+  13, 14, 15 or 16 while you switch it on. Each holds a kit, and Thump follows the pad's preset.
+  To switch while you play, let pads 13 to 16 switch presets (one button in Kits), or click the
+  keys above the pads. Put any kit on any preset in the Kits panel, or
   fill all four at once with a set of ready-made kits (Bass music, Industrial, Old school, Live
   drums) or with your own. Each preset keeps its pads as you left them. Following the pad needs
   the same link to the pad as the lights (USB, or Bluetooth once connected in Lights).
+- **Pad controls**: any pad can work a control instead of playing its sound (right-click it,
+  then Pad does): note repeat while held, repeat on/off and rate, latch (held sounds and
+  repeats keep going until you hit the pad again), stop all sound, presets 1 to 4 or next and
+  previous, next and previous pattern, swing, tap tempo, metronome, play/stop, record, undo,
+  and mute while held. Controls stay on their pads when you switch kits. On the pad, control
+  pads glow orange, brighter while their control is on.
 - **Per pad**: sound, volume, pitch, length, drive, pan, hold, reverse, cut group. Turn a knob
   by dragging up or down (Shift for fine moves) or scrolling over it; double-click resets it.
 - **Patterns and songs**: 8 patterns (A to H) of 1, 2 or 4 bars. Click a pattern while playing
@@ -88,10 +95,10 @@ still work.
 `sources/extra/`, for kits from Hydrogen's library that don't state a license. Neither is in
 this repository; the app loads `kits-extra.js` if it is there.
 
-The self-test (193 checks) checks every preset sound exists, renders every synth sound and 15
+The self-test (213 checks) checks every preset sound exists, renders every synth sound and 15
 wobble designs, decodes every sample, and checks loop timing, swing, song order, pattern
 switching, old beat files, offline rendering, WAV and MP3 encoding, mic trimming, the
-chopper's hit detection, your kits and the four presets, the spectrum's levels and auto gain, and the pad
+chopper's hit detection, your kits and the four presets, pad controls, the spectrum's levels and auto gain, and the pad
 lights and preset following against a pretend pad. `--fake-media` gives headless Chromium a fake microphone; `--shot
 file.png` saves a screenshot.
 

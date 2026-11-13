@@ -367,6 +367,21 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 22px; al
 .pad.drop { outline: 2px dashed var(--vfd); outline-offset: 3px; }
 .pad.note .name { font-size: clamp(16px, 5cqw, 28px); }
 .pad.held .flash { opacity: .45 !important; }
+/* a pad that works a control: a function key with hatched rubber and orange lettering;
+   its light pipe is dim until the control is on */
+.pad.ctl {
+  background:
+    repeating-linear-gradient(-45deg, #ffffff07 0 6px, transparent 6px 12px),
+    radial-gradient(130% 90% at 50% 105%, #ff6a1a1a, transparent 70%),
+    linear-gradient(180deg, #232426 0%, #19191b 55%, #141516 100%);
+}
+.pad.ctl::before { opacity: .32; }
+.pad.ctl .name { color: #ffd2b8; }
+.pad.ctl .cat { color: #ff6a1acc; text-transform: uppercase; letter-spacing: .08em; }
+.pad.ctl.on::before { opacity: 1; box-shadow: 0 0 16px 0 #ff6a1aaa, inset 0 0 16px -2px #ff6a1a99; }
+.pad.ctl.on .name { color: #fff3ea; text-shadow: 0 0 10px #ff6a1a, 0 1px 0 #000; }
+.pad.ctl.on .cat { color: var(--accent-hot); }
+.pad .badges b.fn { color: #ffb489; background: #140b05cc; box-shadow: inset 0 0 0 1px #ff6a1a55; letter-spacing: .08em; }
 .pad.muted { filter: saturate(.25) brightness(.6); }
 .pad.muted::after { content: "MUTED"; position: absolute; top: 42%; left: 0; right: 0; z-index: 2; text-align: center; font: 700 13px "Barlow Condensed"; letter-spacing: .3em; color: var(--warn); text-shadow: 0 0 8px #ffc23d88; }
 
@@ -422,6 +437,11 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 22px; al
 .knob-ctrl:focus-within .knob { box-shadow: 0 0 0 2px var(--accent); }
 .knob.turn .cap::after { background: var(--accent-hot); box-shadow: 0 0 6px var(--accent); }
 
+.contents { display: contents; }
+.ctl-row { display: flex; }
+.ctl-row .field { flex: 1; }
+.ctl-row select { flex: 1; height: 32px; min-width: 0; }
+.ctl-help { margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink-dim); padding: 10px 12px; border-radius: 4px; background: #0d0e0f; box-shadow: inset 0 1px 3px #000, inset 3px 0 0 var(--accent), 0 1px 0 #ffffff0d; }
 .toggles { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .toggles .field { margin-left: auto; gap: 7px; }
 .toggles .field > span { letter-spacing: .1em; }
