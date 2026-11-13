@@ -961,16 +961,17 @@
       // while it is busy, so the pad's own colours go back as whole records in one message.
       // shown is left alone, so if this is lost the next start still knows the originals.
       restoreNow() {
-        if (!link || !ready || !recs) return;
+        if (!link || !ready || !recs) return false;
         const base = preset * POCKET.preset, at = r => base + r * POCKET.rec + POCKET.rgb, touched = [];
         for (let r = 0; r < POCKET.records; r++) if (orig.has(at(r)) && !sameRgb(shown.get(at(r)), orig.get(at(r)))) touched.push(r);
-        if (!touched.length) return;
+        if (!touched.length) return false;
         const lo = touched[0], hi = touched[touched.length - 1], block = recs.slice(lo * POCKET.rec, (hi + 1) * POCKET.rec);
         for (let r = lo; r <= hi; r++) if (orig.has(at(r))) block.set(orig.get(at(r)), (r - lo) * POCKET.rec + POCKET.rgb);
         const step = (link.kind === 'bt' ? 18 : 38) * POCKET.rec; // a Bluetooth packet must fit one 512-byte write
         for (let o = 0; o < block.length; o += step) {
           try { link.send(SMC.write(5, base + lo * POCKET.rec + o, [...block.slice(o, o + step)])); } catch { }
         }
+        return true;
       },
       get status() { return status; },
       get model() { return model; },
@@ -1970,7 +1971,7 @@
     brightIn.addEventListener('input', () => { lightOpts.bright = +brightIn.value; changed(); });
     const brightRow = el('div', { class: 'form-row' }, el('span', {}, 'Brightness'), el('div', { class: 'ctrl' }, brightIn, brightOut));
     const flashRow = segRow('When you hit', [[true, 'Flash'], [false, 'Nothing']], () => lightOpts.flash, v => { lightOpts.flash = v; });
-    const beatRow = segRow('When the beat plays', [[true, 'Flash'], [false, 'Nothing']], () => lightOpts.beat, v => { lightOpts.beat = v; });
+    const beatRow = segRow('On the beat', [[true, 'Flash'], [false, 'Nothing']], () => lightOpts.beat, v => { lightOpts.beat = v; });
     const whiteRow = segRow('Flash color', [[false, 'Brighter'], [true, 'White']], () => lightOpts.white, v => { lightOpts.white = v; });
     const mineRow = el('div', { class: 'form-row' }, el('span', {}), mineBox);
     const paint = () => {
@@ -2037,7 +2038,7 @@
         el('li', {}, 'Set Repeat to 1/16 and hold a hi-hat for rolls, or hold a wobble for stutters.'),
         el('li', {}, 'Sweep the master Filter down before a drop and back to Off when it hits.'),
         el('li', {}, 'Record with mic: bang on metal for industrial hits. Chop a long sound: put a vocal or loop across the pads.'),
-        el('li', {}, 'With the pad plugged in by USB, its lights show each pad\'s sound color and flash as they play. Turn them off in Settings (the gear).')),
+        el('li', {}, 'Lights (top bar) sets your pad\'s colors: sound colors, your own, or the pad\'s own, with flashes as pads play. Works over USB or Bluetooth.')),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Got it')));
   }
   let modalCleanup = null;
@@ -2321,7 +2322,16 @@
     renderAll();
     preloadKit();
     initMidi();
-    window.addEventListener('pagehide', () => lights.restoreNow());
+    // Closing: put the pad's own colours back. A Bluetooth write still needs the browser for
+    // a moment after the page lets go of it, so the page waits briefly before closing.
+    let closing = false;
+    const restoreOnClose = () => {
+      if (closing) return;
+      closing = true;
+      if (lights.restoreNow() && lights.kind === 'bt') { const t = performance.now(); while (performance.now() - t < 400) { } }
+    };
+    window.addEventListener('beforeunload', restoreOnClose);
+    window.addEventListener('pagehide', restoreOnClose);
     startClock();
     if (!store.get('seenHelp2', false)) { store.set('seenHelp2', true); showHelp(); }
   }

@@ -237,6 +237,7 @@ input[type=range].center::-webkit-slider-runnable-track { background: var(--rais
 .mono { font: 12px ui-monospace, monospace; color: var(--muted); }
 
 /* Lights dialog */
+.modal-card .form-row > .seg { justify-self: start; }
 .lights-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
 .lights-head h2 { margin: 0; }
 .lights-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
