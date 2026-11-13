@@ -639,9 +639,13 @@
   const latched = new Map();
   const rateName = v => (REPEATS.find(([r]) => Math.abs(r - v) < 1e-9) || [0, 'Off'])[1];
   const shortKit = name => name.replace(/ \(edited\)$/, '').split(/ \/ | \(/)[0] + (/ \(edited\)$/.test(name) ? '*' : '');
-  function setControl(i, id) {
+  // Let go of a pad (held or latched) before it changes what it does.
+  function freePad(i) {
     for (const [k, h] of [...held]) if (h.grid === i) padUp(i, k[0]);
     unlatch(i);
+  }
+  function setControl(i, id) {
+    freePad(i);
     controls[i] = CTL[id] ? id : null;
     store.set('controls', controls);
     renderPads(); renderPanel(); renderPresetKeys();
@@ -747,7 +751,7 @@
     menu.style.top = Math.max(8, Math.min(y, innerHeight - h - 8)) + 'px';
   }
   // Keeps the control pads (and their lights) up to date; cheap enough to run every frame.
-  let ctlSig = '';
+  let ctlSig = null;
   function ctlRefresh() {
     let sig = '';
     for (let i = 0; i < 16; i++) {
@@ -1324,7 +1328,7 @@
         pad.querySelector('.badges').replaceChildren(...b);
       }
     }
-    ctlSig = '';
+    ctlSig = null; // always send the lights
     ctlRefresh();
   }
   function flashPad(i, vel, beat) {
@@ -2019,7 +2023,7 @@
   const presetPads = () => [0, 1, 2, 3].every(n => controls[12 + n] === 'preset' + n);
   function togglePresetPads() {
     const on = !presetPads();
-    [0, 1, 2, 3].forEach(n => { controls[12 + n] = on ? 'preset' + n : null; });
+    [0, 1, 2, 3].forEach(n => { freePad(12 + n); controls[12 + n] = on ? 'preset' + n : null; });
     store.set('controls', controls);
     renderPads(); renderPanel(); renderPresetKeys();
     toast(on ? 'Pads 13 to 16 now switch presets' : 'Pads 13 to 16 play their sounds again');
@@ -2678,9 +2682,15 @@
         el('li', {}, 'Set Repeat to 1/16 and hold a hi-hat for rolls, or hold a wobble for stutters.'),
         el('li', {}, 'Sweep the master Filter down before a drop and back to Off when it hits.'),
         el('li', {}, 'Record with mic: bang on metal for industrial hits. Chop a long sound: put a vocal or loop across the pads.'),
-        el('li', {}, 'Lights (top bar) sets your pad\'s colors: sound colors, your own, or the pad\'s own, with flashes as pads play. Works over USB or Bluetooth.'),
-        el('li', {}, 'Your pad has four presets (hold pad 13 to 16 while you switch it on), and Thump puts a kit on each. Kits (top bar) chooses them and saves your own kits.'),
-        el('li', {}, 'Any pad can work a control instead of a sound: right-click it and pick one (or hit it and use Pad does in the panel). Note repeat, latch, presets, patterns, swing, tap tempo, play and record.')),
+        el('li', {}, 'The spectrum on the display shows what you hear, kicks on the left and hi-hats on the right. It sets its own sensitivity, so quiet kits fill it too.')),
+      el('h2', {}, 'Your pad'),
+      el('ul', {},
+        el('li', {}, 'Click or hit a pad to change it in the panel on the right: its sound, volume, pitch and more.'),
+        el('li', {}, 'Right-click a pad to make it a control instead of a sound: note repeat, latch, presets, patterns, swing, tap tempo, metronome, play, record, undo or mute. Pick Play its sound to get the sound back.'),
+        el('li', {}, 'Latch: with it on, a Hold pad (like a wobble) or a repeating pad keeps going after you let go. Hit it again to stop it.'),
+        el('li', {}, 'Your pad has four presets. It picks one when you switch it on with pad 13, 14, 15 or 16 held, and Thump loads the kit on it. Kits (top bar) chooses the four kits and saves your own.'),
+        el('li', {}, 'To switch kits while you play, turn on Pads 13 to 16 switch presets in Kits.'),
+        el('li', {}, 'Lights (top bar) sets your pad\'s colors: sound colors, your own, or the pad\'s own, with flashes as pads play. Control pads glow orange, brighter while they are on. Works over USB or Bluetooth.')),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Got it')));
   }
   let modalCleanup = null;
@@ -2985,6 +2995,15 @@
       const keepCtl = controls.slice(), keepPresets = JSON.stringify(padPresets), keepPats = JSON.stringify(state.patterns), keepPat = state.pat;
       const keepMaster = Object.assign({}, state.master), keepClick = state.click, keepMode = lightOpts.mode;
       silence(); setRepeat(0); latch = false; lightOpts.mode = 'sound';
+      controls.fill(null);
+      {
+        const real = lights.setPads;
+        let sent = 0;
+        lights.setPads = l => { sent++; return real.call(lights, l); };
+        renderPads();
+        lights.setPads = real;
+        ok(sent >= 1, 'controls: with no control pads, redrawing the pads still updates the pad lights');
+      }
       fillSlots(['dubstep', 'riddim', 'industrial', 'electro']); goSlot(0);
       if (presetPads()) togglePresetPads();
       togglePresetPads();

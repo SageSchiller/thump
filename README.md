@@ -5,10 +5,10 @@ app window. Works with the pad over USB or Bluetooth (both show up as normal MID
 Linux), plus mouse and keyboard.
 
 It looks and works like a piece of hardware: a graphite body with silkscreened labels, a
-glowing display (tempo, pattern, bar, beat and step, and a live spectrum of what you hear that sets its own sensitivity like a recording meter, from
-kick drums on the left to hi-hats on the right),
-pads lit from inside in each sound's color that flare when hit, knobs you drag up and down,
-keys with indicator lights, and a step grid that lights up as the beat runs.
+glowing display (tempo, pattern, bar, beat and step, and a live spectrum of what you hear, from
+kick drums on the left to hi-hats on the right, that sets its own sensitivity like a recording
+meter), pads lit from inside in each sound's color that flare when hit, knobs you drag up and
+down, keys with indicator lights, and a step grid that lights up as the beat runs.
 
 ## Run
 
@@ -33,16 +33,18 @@ record: choose Allow.
 - **Four presets, like the pad's**: the SMC-PAD Pocket has four presets, picked by holding pad
   13, 14, 15 or 16 while you switch it on. Each holds a kit, and Thump follows the pad's preset.
   To switch while you play, let pads 13 to 16 switch presets (one button in Kits), or click the
-  keys above the pads. Put any kit on any preset in the Kits panel, or
-  fill all four at once with a set of ready-made kits (Bass music, Industrial, Old school, Live
-  drums) or with your own. Each preset keeps its pads as you left them. Following the pad needs
-  the same link to the pad as the lights (USB, or Bluetooth once connected in Lights).
+  keys above the pads. Put any kit on any preset in the Kits panel, or fill all four at once
+  with a set of ready-made kits (Bass music, Industrial, Old school, Live drums) or with your
+  own. Each preset keeps its pads as you left them. Following the pad needs the same link to
+  the pad as the lights (USB, or Bluetooth once connected in Lights).
 - **Pad controls**: any pad can work a control instead of playing its sound (right-click it and
-  pick one from the menu, or hit it and use Pad does in the panel): note repeat while held, repeat on/off and rate, latch (held sounds and
-  repeats keep going until you hit the pad again), stop all sound, presets 1 to 4 or next and
-  previous, next and previous pattern, swing, tap tempo, metronome, play/stop, record, undo,
-  and mute while held. Controls stay on their pads when you switch kits. On the pad, control
-  pads glow orange, brighter while their control is on.
+  pick one from the menu, or hit it and use Pad does in the panel): note repeat while held,
+  repeat on/off and rate, latch (held sounds and repeats keep going until you hit the pad
+  again), stop all sound, presets 1 to 4 or next and previous, next and previous pattern,
+  swing, tap tempo, metronome, play/stop, record, undo, and mute while held. Controls stay on
+  their pads when you switch kits, and the kit keeps each pad's sound for when you set it back
+  (beats you recorded on that pad still play it). On the pad, control pads glow orange,
+  brighter while their control is on.
 - **Per pad**: sound, volume, pitch, length, drive, pan, hold, reverse, cut group. Turn a knob
   by dragging up or down (Shift for fine moves) or scrolling over it; double-click resets it.
 - **Patterns and songs**: 8 patterns (A to H) of 1, 2 or 4 bars. Click a pattern while playing
@@ -65,7 +67,8 @@ record: choose Allow.
 - **Save audio**: render a pattern (×1 to ×8) or the whole song to MP3 or WAV, faster than
   real time. Beats save in the app and export to `.thump.json` (with your own sounds inside).
 
-Esc stops all sound. Space plays and stops. Ctrl+Z undoes.
+Esc stops all sound. Space plays and stops. Ctrl+Z undoes. Right-click a pad to make it a
+control. The ? button in the top bar has a short guide.
 
 ## Pad layout
 
@@ -95,12 +98,12 @@ still work.
 `sources/extra/`, for kits from Hydrogen's library that don't state a license. Neither is in
 this repository; the app loads `kits-extra.js` if it is there.
 
-The self-test (215 checks) checks every preset sound exists, renders every synth sound and 15
+The self-test (216 checks) checks every preset sound exists, renders every synth sound and 15
 wobble designs, decodes every sample, and checks loop timing, swing, song order, pattern
 switching, old beat files, offline rendering, WAV and MP3 encoding, mic trimming, the
-chopper's hit detection, your kits and the four presets, pad controls, the spectrum's levels and auto gain, and the pad
-lights and preset following against a pretend pad. `--fake-media` gives headless Chromium a fake microphone; `--shot
-file.png` saves a screenshot.
+chopper's hit detection, your kits and the four presets, pad controls, the spectrum's levels
+and auto gain, and the pad lights and preset following against a pretend pad. `--fake-media`
+gives headless Chromium a fake microphone; `--shot file.png` saves a screenshot.
 
 ## How the pad lights work
 
@@ -110,7 +113,8 @@ editor app changes with SysEx on the USB "Private" port, using a protocol revers
 uses the same protocol. Its memory holds 4 presets of 2931 bytes, each 112 pad records (7 banks
 of 16) of 26 bytes, with the pad's red, green and blue at bytes 5 to 7. The pad only takes writes
 after a full read of its settings, kept alive by reading its 12-byte global block about three
-times a second. Byte 10 of that block is the preset the pad is on (found by
+times a second. Byte 10 of that block is the preset the pad is on (the Pocket picks it at
+power-on, with pad 13 to 16 held; found by
 [rjpenny16/smc-pad-studio](https://github.com/rjpenny16/smc-pad-studio)), which is how Thump
 follows the pad's presets. When the pad moves to another preset or bank, the pads Thump lit
 there get their own colors back.
