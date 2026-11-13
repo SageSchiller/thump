@@ -513,7 +513,7 @@
       v.src.addEventListener('ended', () => seq.loopVoices.delete(v));
       if (v.hold) live.release(v, when + e.dur * spb());
     }
-    later(when, () => flashPad(gridIndexFor(e.pad, e.semis), e.vel));
+    later(when, () => flashPad(gridIndexFor(e.pad, e.semis), e.vel, true));
   }
   function later(when, fn) { setTimeout(fn, Math.max(0, (when - ctx.currentTime) * 1000)); }
 
@@ -602,6 +602,7 @@
   }
   function padDown(i, vel, source) {
     if (ctx.state !== 'running') ctx.resume();
+    if (lightPick) lightPick(i);
     if (muteMode && !state.notes) { toggleMute(i); flashPad(i, 60); return; }
     const key = source + i;
     if (held.has(key)) padUp(i, source);
@@ -654,7 +655,7 @@
       inp.onmidimessage = skip ? null : onMidi;
       if (!skip && inp.state === 'connected') names.push(inp.name);
     }
-    lights.attach(sysexOk && [...midi.outputs.values()].find(o => o.state === 'connected' && isPad(o.name) && /private/i.test(o.name)) || null);
+    chooseLink();
     const pads = names.filter(isPad);
     if (!pads.length) for (const [k, h] of [...held]) if (k[0] === 'm') padUp(h.grid, 'm');
     if (pads.length) {
@@ -667,11 +668,11 @@
     const [st, d1, d2] = e.data, cmd = st & 0xf0;
     if (st === 0xF0) return lights.onSysex(e.data);
     if (cmd !== 0x90 && cmd !== 0x80) return;
-    if (cmd === 0x90 && isPad(e.target.name || '')) lights.note(d1);
     const on = cmd === 0x90 && d2 > 0, k = (on ? 'on' : 'off') + d1, prev = lastMsg.get(k);
     if (prev !== undefined && e.timeStamp - prev < 15) return; // same hit arriving on a second port
     lastMsg.set(k, e.timeStamp);
-    const i = mod(d1 - 36, 16);
+    // With the lights session open, the pad's own note layout says which pad was hit.
+    const i = (isPad(e.target.name || '') ? lights.padFor(st, d1) : null) ?? mod(d1 - 36, 16);
     on ? padDown(i, d2, 'm') : padUp(i, 'm');
   }
   function setStatus(kind, text, onclick) {
@@ -712,14 +713,15 @@
   }
   // ---------------------------------------------------------------- pad lights
   // The SMC-PAD Pocket ignores MIDI notes for its lights. Its colours live in the
-  // settings memory that M-VAVE's editor app changes with SysEx on the USB
-  // "Private" port (protocol reverse-engineered in github.com/spectalive/smc-pad).
-  // A logical packet 00 59 <cmd> <length, 3 bytes LE> <data> <~sum(data)> is
-  // bit-packed 8-to-7, least significant bit first, between F0 and F7. The pad only
-  // takes writes after a full read of its settings, kept alive by reading its
-  // 12-byte global block twice a second. Writes change live memory only (Thump never
-  // sends the save command), so the pad's own colours come back when it is switched
-  // off, and Thump puts them back when it closes or the lights are turned off.
+  // settings memory that M-VAVE's editor app changes (protocol reverse-engineered in
+  // github.com/spectalive/smc-pad). A logical packet 00 59 <cmd> <length, 3 bytes LE>
+  // <data> <~sum(data)> goes over USB as SysEx on the "Private" port, bit-packed
+  // 8-to-7 least significant bit first between F0 and F7, or over Bluetooth raw to
+  // GATT characteristic AE41 (service AE40), with answers on AE42. The pad only takes
+  // writes after a full read of its settings, kept alive by reading its 12-byte global
+  // block twice a second. Writes change live memory only (Thump never sends the save
+  // command), so the pad's own colours come back when it is switched off, and Thump
+  // puts them back when it closes or the lights are turned off.
   const SMC = {
     toMidi(bytes) {
       const out = [0xF0];
@@ -745,13 +747,33 @@
     le: (v, n) => Array.from({ length: n }, (_, i) => (v >>> (8 * i)) & 255),
     packet(cmd, data) { const n = data.length; return [0x00, 0x59, cmd, n & 255, (n >> 8) & 255, (n >> 16) & 255, ...data, SMC.sum(data)]; },
     parse(b) {
-      if (b.length < 7 || b[0] !== 0 || b[1] !== 0x59) return null;
+      if (!b || b.length < 7 || b[0] !== 0 || b[1] !== 0x59) return null;
       const n = b[3] | b[4] << 8 | b[5] << 16, data = b.slice(6, 6 + n);
       return data.length === n && b[6 + n] === SMC.sum(data) ? { cmd: b[2], data } : null;
     },
     head: (region, addr, len) => [region, ...SMC.le(addr, 4), ...SMC.le(len, 3)],
     read: (region, addr, len) => SMC.packet(0x23, SMC.head(region, addr, len)),
     write: (region, addr, bytes) => SMC.packet(0x22, [...SMC.head(region, addr, bytes.length), ...bytes]),
+    // Bluetooth notifications split long answers: join them back into packets.
+    joiner(onPacket) {
+      let buf = [];
+      return bytes => {
+        buf.push(...bytes);
+        for (;;) {
+          let s = 0; // skip to the next packet start (00 59)
+          while (s < buf.length && !(buf[s] === 0 && (s + 1 === buf.length || buf[s + 1] === 0x59))) s++;
+          if (s) buf = buf.slice(s);
+          if (buf.length < 6) return;
+          const n = buf[3] | buf[4] << 8 | buf[5] << 16;
+          if (n > 2048) { buf = buf.slice(1); continue; } // not a real header
+          if (buf.length < n + 7) return;
+          const p = SMC.parse(buf.slice(0, n + 7));
+          if (!p) { buf = buf.slice(1); continue; }
+          buf = buf.slice(n + 7);
+          onPacket(p);
+        }
+      };
+    },
   };
   // Settings memory of the Pocket: 4 presets of 2931 bytes, each 112 pad records
   // (7 banks of 16) of 26 bytes, `00 <channel> <note> <min> <max> R G B FF ...`.
@@ -760,12 +782,32 @@
   const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
   const rgbHex = c => '#' + c.map(x => x.toString(16).padStart(2, '0')).join('');
 
+  // A link carries logical packets to the pad and hands the pad's packets to onPacket.
+  function usbLink(out) {
+    return { kind: 'usb', id: 'usb:' + out.id, send: b => out.send(SMC.toMidi(b)), close() { } };
+  }
+  async function btLink(device) {
+    const gatt = await device.gatt.connect(), svc = await gatt.getPrimaryService(0xae40);
+    const tx = await svc.getCharacteristic(0xae41), rx = await svc.getCharacteristic(0xae42);
+    const link = {
+      kind: 'bt', id: 'bt:' + device.id, onPacket: null, onClose: null,
+      send: b => { tx.writeValueWithoutResponse(new Uint8Array(b)).catch(() => { }); },
+      close() { try { gatt.disconnect(); } catch { } },
+    };
+    const join = SMC.joiner(p => link.onPacket && link.onPacket(p));
+    rx.addEventListener('characteristicvaluechanged', e => { const v = e.target.value; join(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)); });
+    await rx.startNotifications();
+    device.addEventListener('gattserverdisconnected', () => link.onClose && link.onClose(), { once: true });
+    return link;
+  }
+
   function makeLights({ enabled, key, onState = () => { } }) {
-    let out = null, ready = false, running = false, wake = null, waiter = null, failures = 0, lastPoll = 0;
+    let link = null, ready = false, running = false, wake = null, waiter = null, failures = 0, lastPoll = 0;
     let glob = null, preset = 0, group = 2, model = '', status = 'nopad', saveTimer = 0;
     let recs = null; // the current preset's 112 pad records, as read at the last unlock
-    const want = new Map(), flashT = [], full = Array(16).fill(null);
-    let idle = Array.from({ length: 16 }, () => [0, 0, 0]);
+    let notes = new Map(); // (channel << 8 | note) -> record numbers in the current preset
+    const want = new Map(), flashT = [];
+    let pads = Array.from({ length: 16 }, () => ({ rgb: null, level: 0, own: false }));
     // shown: what the pad holds, as far as Thump knows. orig: the pad's own colours.
     const saved = key ? store.get(key, {}) : {};
     const load = o => new Map(Object.entries(o || {}).map(([a, h]) => [+a, hexRgb(h)]));
@@ -781,27 +823,27 @@
     const setStatus = s => { if (s !== status) { status = s; onState(s); } };
     const addr = i => preset * POCKET.preset + (group * 16 + i) * POCKET.rec + POCKET.rgb;
     const kick = () => { if (wake) wake(); else if (!running) run(); };
+    const idleOf = i => { const p = pads[i]; return p.own ? orig.get(addr(i)) || [0, 0, 0] : p.rgb ? p.rgb.map(x => Math.round(x * p.level)) : [0, 0, 0]; };
 
     function request(logical, cmd, ms, match) {
       return new Promise(res => {
         const timer = setTimeout(() => { if (waiter && waiter.res === res) waiter = null; res(null); }, ms);
         waiter = { cmd, match, res, timer };
-        try { out.send(SMC.toMidi(logical)); } catch { clearTimeout(timer); waiter = null; res(null); }
+        try { link.send(logical); } catch { clearTimeout(timer); waiter = null; res(null); }
       });
     }
-    function onSysex(bytes) {
-      const p = SMC.parse(SMC.fromMidi(bytes));
+    function receive(p) {
       if (!p || !waiter || p.cmd !== waiter.cmd || (waiter.match && !waiter.match(p.data))) return;
       const w = waiter;
       waiter = null; clearTimeout(w.timer); w.res(p.data);
     }
     async function readRegion(region, a, len) {
       const head = SMC.head(region, a, len);
-      const d = await request(SMC.read(region, a, len), 0x23, 800, d => d.length === len + 8 && head.every((b, i) => d[i] === b));
+      const d = await request(SMC.read(region, a, len), 0x23, 1500, d => d.length === len + 8 && head.every((b, i) => d[i] === b));
       return d && d.slice(8);
     }
     async function unlock() {
-      const id = await request(SMC.packet(0x11, []), 0x11, 800);
+      const id = await request(SMC.packet(0x11, []), 0x11, 1500);
       if (!id) return false;
       model = String.fromCharCode(...id.filter(b => b > 31 && b < 127)).trim();
       if (!/pocket/i.test(model)) return null; // only the Pocket's memory layout is known
@@ -816,8 +858,11 @@
       const p = g[10] < 4 ? g[10] : 0, base = p * POCKET.preset;
       for (let r = 0; r < POCKET.records; r++) if (mem[base + r * POCKET.rec] !== 0 || mem[base + r * POCKET.rec + 8] !== 0xFF) return null;
       glob = g; preset = p; recs = mem.slice(base, base + POCKET.records * POCKET.rec);
+      notes = new Map();
       for (let r = 0; r < POCKET.records; r++) {
-        const a = base + r * POCKET.rec + POCKET.rgb, cur = [...mem.slice(a, a + 3)];
+        const o = base + r * POCKET.rec, k = (mem[o + 1] & 15) << 8 | mem[o + 2];
+        notes.set(k, [...(notes.get(k) || []), r]);
+        const a = o + POCKET.rgb, cur = [...mem.slice(a, a + 3)];
         // A colour Thump didn't put there is the pad's own (first run, or the pad was switched off since).
         if (!orig.has(a) || !sameRgb(cur, shown.get(a))) orig.set(a, cur);
         shown.set(a, cur);
@@ -825,26 +870,27 @@
       persist();
       return true;
     }
+    function paintAll() { for (let i = 0; i < 16; i++) if (!flashT[i]) want.set(addr(i), idleOf(i)); }
     async function run() {
       if (running) return;
       running = true;
       try {
-        while (out && (enabled() || want.size)) {
+        while (link && (enabled() || want.size)) {
           if (!ready) {
             setStatus('connecting');
             const ok = await unlock();
             if (ok === null) { setStatus('unsupported'); break; }
             if (!ok) { if (++failures >= 3) { setStatus('noreply'); break; } await sleep(500); continue; }
             ready = true; failures = 0; lastPoll = performance.now();
+            if (enabled()) { want.clear(); paintAll(); }
             setStatus(enabled() ? 'on' : 'off');
-            if (enabled()) { want.clear(); for (let i = 0; i < 16; i++) if (!flashT[i]) want.set(addr(i), idle[i]); }
             continue;
           }
           if (want.size) {
             const [a, rgb] = want.entries().next().value;
             want.delete(a);
             if (sameRgb(shown.get(a), rgb)) continue;
-            const ack = await request(SMC.write(5, a, rgb), 0x00, 600);
+            const ack = await request(SMC.write(5, a, rgb), 0x00, 1000);
             if (!ack || ack[0] !== 0) { ready = false; if (!want.has(a)) want.set(a, rgb); continue; }
             shown.set(a, rgb); persist();
             continue;
@@ -862,90 +908,139 @@
         }
       } finally {
         running = false;
-        if (!enabled() && status !== 'nopad') setStatus('off');
+        if (link && !enabled() && status !== 'unsupported' && status !== 'noreply') setStatus('off');
       }
     }
     function queue(i, rgb) {
-      if (!out || !enabled() || !ready) return;
+      if (!link || !enabled() || !ready) return;
       want.set(addr(i), rgb);
       kick();
     }
     return {
-      SMC,
-      attach(o) {
-        if (o === out) return;
-        out = o; ready = false; failures = 0; want.clear();
+      attach(l) {
+        if ((l && l.id) === (link && link.id)) return;
+        if (link && link !== l) link.onPacket = null;
+        link = l; ready = false; failures = 0; want.clear();
         if (waiter) { clearTimeout(waiter.timer); waiter.res(null); waiter = null; }
-        setStatus(o ? (enabled() ? 'connecting' : 'off') : 'nopad');
-        if (o && enabled()) kick();
+        if (l) l.onPacket = receive;
+        setStatus(l ? (enabled() ? 'connecting' : 'off') : 'nopad');
+        if (l && enabled()) kick();
       },
-      onSysex,
-      // colours: 16 entries of { base: '#rrggbb' or null, level: 0-1 }
-      setPads(colours) {
-        colours.forEach((c, i) => {
-          full[i] = c.base ? hexRgb(c.base).map(x => 255 * (x / 255) ** 2.2) : null; // gamma keeps LED colours saturated
-          idle[i] = full[i] ? full[i].map(x => Math.round(x * c.level)) : [0, 0, 0];
-          full[i] = full[i] && full[i].map(Math.round);
-          if (!flashT[i]) queue(i, idle[i]);
-        });
+      onSysex(bytes) { if (link && link.kind === 'usb') receive(SMC.parse(SMC.fromMidi(bytes))); },
+      // pads: 16 entries of { base: '#rrggbb' or null, level: 0-1, own: use the pad's own colour }
+      setPads(list) {
+        pads = list.map(c => ({ rgb: c.base ? hexRgb(c.base).map(x => 255 * (x / 255) ** 2.2) : null, level: c.level, own: !!c.own })); // gamma keeps LED colours saturated
+        for (let i = 0; i < 16; i++) if (!flashT[i]) queue(i, idleOf(i));
       },
-      flash(i, vel) {
-        if (!ready || !full[i] || !enabled()) return;
-        const k = 0.35 * Math.max(0, (vel - 64) / 63); // hard hits go whiter
-        queue(i, full[i].map(x => Math.round(x + (250 - x) * k)));
+      flash(i, vel, white) {
+        const p = pads[i];
+        if (!ready || !enabled() || !(p.rgb || p.own)) return;
+        const k = white || p.own ? 1 : 0.35 * Math.max(0, (vel - 64) / 63); // hard hits go whiter
+        queue(i, (p.rgb || [250, 250, 250]).map(x => Math.round(x + (250 - x) * k)));
         clearTimeout(flashT[i]);
-        flashT[i] = setTimeout(() => { flashT[i] = 0; queue(i, idle[i]); }, 90);
+        flashT[i] = setTimeout(() => { flashT[i] = 0; queue(i, idleOf(i)); }, 90);
       },
-      // Pads in another bank send other notes: follow them to the bank on show.
-      note(n) {
-        if (n < 4 || n > 115) return;
-        const g = (n - 4) >> 4;
-        if (g === group) return;
-        group = g;
-        if (ready && enabled()) { for (let i = 0; i < 16; i++) want.set(addr(i), idle[i]); kick(); }
+      // Which of the 16 pads sent this note, from the pad's own note layout. It also
+      // follows the pad to another bank. null when the note isn't in the current preset.
+      padFor(ch, n) {
+        const rs = notes.get((ch & 15) << 8 | n);
+        if (!rs) return null;
+        const r = rs.find(x => x >> 4 === group) ?? rs[0];
+        if (r >> 4 !== group) { group = r >> 4; if (ready && enabled()) { paintAll(); kick(); } onState(status); }
+        return r & 15;
       },
+      // The pad's own colours for the 16 pads on show (null if not known yet).
+      own: () => Array.from({ length: 16 }, (_, i) => orig.has(addr(i)) ? rgbHex(orig.get(addr(i))) : null),
       // Put the pad's own colours back (the lights were turned off).
       restore() {
         want.clear();
         for (const [a, c] of orig) if (!sameRgb(shown.get(a), c)) want.set(a, c);
-        if (want.size && out) { if (!running) run(); else kick(); }
+        if (want.size && link) kick();
       },
       // The page is closing and can't wait for answers. The pad drops messages that arrive
       // while it is busy, so the pad's own colours go back as whole records in one message.
       // shown is left alone, so if this is lost the next start still knows the originals.
       restoreNow() {
-        if (!out || !ready || !recs) return;
+        if (!link || !ready || !recs) return;
         const base = preset * POCKET.preset, at = r => base + r * POCKET.rec + POCKET.rgb, touched = [];
         for (let r = 0; r < POCKET.records; r++) if (orig.has(at(r)) && !sameRgb(shown.get(at(r)), orig.get(at(r)))) touched.push(r);
         if (!touched.length) return;
         const lo = touched[0], hi = touched[touched.length - 1], block = recs.slice(lo * POCKET.rec, (hi + 1) * POCKET.rec);
         for (let r = lo; r <= hi; r++) if (orig.has(at(r))) block.set(orig.get(at(r)), (r - lo) * POCKET.rec + POCKET.rgb);
-        for (let o = 0; o < block.length; o += 38 * POCKET.rec) {
-          try { out.send(SMC.toMidi(SMC.write(5, base + lo * POCKET.rec + o, [...block.slice(o, o + 38 * POCKET.rec)]))); } catch { }
+        const step = (link.kind === 'bt' ? 18 : 38) * POCKET.rec; // a Bluetooth packet must fit one 512-byte write
+        for (let o = 0; o < block.length; o += step) {
+          try { link.send(SMC.write(5, base + lo * POCKET.rec + o, [...block.slice(o, o + step)])); } catch { }
         }
       },
       get status() { return status; },
       get model() { return model; },
+      get kind() { return link && link.kind; },
       get busy() { return running && (want.size > 0 || !ready); },
       get where() { return { preset, group }; },
     };
   }
-  let padLights = store.get('padLights', true), sysexOk = false;
-  const lights = makeLights({ enabled: () => padLights && sysexOk, key: 'padColors', onState: () => { const s = $('#lightsState'); if (s) s.textContent = lightsText(); } });
+
+  const LIGHTS_DEFAULT = { on: true, mode: 'sound', bright: 0.25, flash: true, white: false, beat: true, mine: null };
+  const lightOpts = Object.assign({}, LIGHTS_DEFAULT, store.get('lights', {}));
+  if (store.get('lights') == null && store.get('padLights', true) === false) lightOpts.on = false;
+  const saveLights = () => store.set('lights', lightOpts);
+  let sysexOk = false, btDevice = null, bt = null, btBusy = false, btError = '', lightPick = null;
+  const lights = makeLights({ enabled: () => lightOpts.on, key: 'padColors', onState: () => lightsUi() });
+  let lightsUi = () => { };
+  // USB when the pad is plugged in, Bluetooth otherwise.
+  function chooseLink() {
+    const usb = sysexOk && midi && [...midi.outputs.values()].find(o => o.state === 'connected' && isPad(o.name) && /private/i.test(o.name));
+    if (usb) { lights.attach(usbLink(usb)); if (bt) { bt.onClose = null; bt.close(); bt = null; } return; }
+    if (bt) return lights.attach(bt);
+    lights.attach(null);
+    const btPad = midi && [...midi.inputs.values()].some(i => i.state === 'connected' && isPad(i.name) && isBt(i.name));
+    if (lightOpts.on && btPad) connectBt(false);
+  }
+  async function connectBt(ask) {
+    if (!navigator.bluetooth || btBusy) return;
+    btBusy = true; btError = ''; lightsUi();
+    try {
+      if (!btDevice && navigator.bluetooth.getDevices) btDevice = (await navigator.bluetooth.getDevices()).find(d => /smc-pad/i.test(d.name || '')) || null;
+      if (!btDevice && ask) btDevice = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'SMC-PAD' }], optionalServices: [0xae40] });
+      if (!btDevice) return;
+      bt = await btLink(btDevice);
+      bt.onClose = () => { bt = null; chooseLink(); };
+    } catch (e) {
+      if (ask && !/cancel/i.test(e.message)) btError = 'Bluetooth: ' + e.message;
+    } finally {
+      btBusy = false;
+      if (bt) chooseLink();
+      lightsUi();
+    }
+  }
   function lightsText() {
-    const bt = midi && [...midi.inputs.values()].some(i => i.state === 'connected' && isPad(i.name) && isBt(i.name));
-    if (!padLights) return 'Off.';
-    if (!sysexOk) return 'Thump needs permission to control MIDI devices. Close Thump, open it again and choose Allow.';
+    const btPad = midi && [...midi.inputs.values()].some(i => i.state === 'connected' && isPad(i.name) && isBt(i.name));
+    if (!lightOpts.on) return 'Off. Your pad shows its own colors.';
+    if (btError) return btError;
+    if (btBusy) return 'Connecting over Bluetooth…';
+    const where = `preset ${lights.where.preset + 1}, bank ${lights.where.group + 1}`;
     return {
-      nopad: bt ? 'Over Bluetooth the lights can\'t be changed yet. Plug the pad in with USB to use them.' : 'Plug the pad in with USB to use its lights.',
+      nopad: btPad ? (navigator.bluetooth ? 'Pad found over Bluetooth. Press Connect to light it wirelessly (once; Thump remembers it).' : 'Plug the pad in with USB to use its lights.')
+        : sysexOk ? 'Switch the pad on, or plug it in with USB.' : 'Thump needs permission to control MIDI devices for USB. Close Thump, open it again and choose Allow.',
       connecting: 'Connecting to the pad…',
-      on: `Working: ${lights.model}, preset ${lights.where.preset + 1}, bank ${lights.where.group + 1}.`,
-      off: 'Off.',
+      on: `Working over ${lights.kind === 'bt' ? 'Bluetooth' : 'USB'}: ${where}.`,
+      off: 'Off. Your pad shows its own colors.',
       unsupported: `This pad (${lights.model || 'unknown'}) isn't supported. Only the SMC-PAD Pocket is.`,
-      noreply: 'The pad didn\'t answer. Unplug it, plug it back in and try again.',
+      noreply: 'The pad didn\'t answer. Switch it off and on, or unplug it and plug it back in.',
     }[lights.status] || '';
   }
-
+  // What the pad's own lights show at rest: dim colours, dark when muted (or empty).
+  function padLightList() {
+    const notes = state.notes;
+    return padEls.map((_, i) => {
+      if (lightOpts.mode === 'own') return { own: true, level: 1 };
+      const p = notes ? state.pads[notes.src] : state.pads[i], info = p.sound && library.get(p.sound);
+      const root = notes && mod(noteSemis(i) - notes.root, 12) === 0;
+      const level = Math.min(1, notes ? lightOpts.bright * (root ? 1.8 : 0.7) : state.mutes[i] ? 0 : lightOpts.bright);
+      const base = lightOpts.mode === 'mine' ? lightOpts.mine && lightOpts.mine[i] : info && CAT[info.cat].color;
+      return { base: base && base !== '#000000' ? base : null, level };
+    });
+  }
   function renderPads() {
     const notes = state.notes;
     for (let i = 0; i < 16; i++) {
@@ -971,17 +1066,12 @@
         pad.querySelector('.badges').replaceChildren(...b);
       }
     }
-    // The pad's own lights follow the screen: dim at rest, dark when muted or empty.
-    lights.setPads(padEls.map((_, i) => {
-      const p = notes ? state.pads[notes.src] : state.pads[i], info = p.sound && library.get(p.sound);
-      const level = notes ? (mod(noteSemis(i) - notes.root, 12) === 0 ? 0.4 : 0.15) : state.mutes[i] ? 0 : 0.22;
-      return { base: info && level ? CAT[info.cat].color : null, level };
-    }));
+    lights.setPads(padLightList());
   }
-  function flashPad(i, vel) {
+  function flashPad(i, vel, beat) {
     const pad = padEls[i];
     if (!pad) return;
-    lights.flash(i, vel);
+    if (beat ? lightOpts.beat : lightOpts.flash) lights.flash(i, vel, lightOpts.white);
     const v = Math.max(0.3, vel / 127), c = pad.style.getPropertyValue('--c') || '#888';
     pad.querySelector('.flash').animate([{ opacity: v }, { opacity: 0 }], { duration: 420, easing: 'cubic-bezier(.2,.7,.3,1)' });
     pad.animate([
@@ -1835,23 +1925,90 @@
   }
 
   // ---------------------------------------------------------------- settings and help
+  const SWATCHES = ['#ff2a2a', '#ff7a00', '#ffd000', '#9be000', '#00e040', '#00e0a0', '#00c8ff', '#2a5cff', '#8a3cff', '#e000ff', '#ff3c9a', '#ffffff'];
+  function lightsDialog() {
+    let picked = new Set([0]);
+    const changed = () => { saveLights(); renderPads(); paint(); };
+    const segRow = (label, opts, get, set) => {
+      const btns = opts.map(([v, l]) => el('button', { onclick: () => { set(v); changed(); } }, l));
+      const row = el('div', { class: 'form-row' }, el('span', {}, label), el('div', { class: 'seg' }, ...btns));
+      row.paint = () => btns.forEach((b, i) => b.setAttribute('aria-pressed', String(opts[i][0] === get())));
+      return row;
+    };
+    const onBtn = el('button', { class: 'btn toggle', title: 'Turn the pad lights on or off', onclick: () => {
+      lightOpts.on = !lightOpts.on;
+      if (lightOpts.on) chooseLink(); else lights.restore();
+      changed();
+    } });
+    const status = el('p', { class: 'status' });
+    const connectBtn = el('button', { class: 'btn sm', onclick: () => connectBt(true) }, 'Connect over Bluetooth');
+    const soundColours = () => state.pads.map(p => { const info = p.sound && library.get(p.sound); return info ? CAT[info.cat].color : '#000000'; });
+    const modeRow = segRow('Colors', [['sound', 'Sound colors'], ['mine', 'My colors'], ['own', 'Pad\'s own']], () => lightOpts.mode, v => {
+      if (v === 'mine' && !lightOpts.mine) lightOpts.mine = soundColours();
+      lightOpts.mode = v;
+    });
+    const cells = Array.from({ length: 16 }, (_, i) => el('button', {
+      class: 'lcell', title: 'Pad ' + (i + 1),
+      onclick: e => {
+        if (lightOpts.mode !== 'mine') return;
+        if (e.shiftKey || e.ctrlKey) { if (picked.has(i) && picked.size > 1) picked.delete(i); else picked.add(i); } else picked = new Set([i]);
+        paint();
+      },
+    }, el('span', {}, String(i + 1))));
+    // Laid out like the pad: pad 1 bottom left, pad 16 top right.
+    const grid = el('div', { class: 'light-grid' }, ...[12, 8, 4, 0].flatMap(r => cells.slice(r, r + 4)));
+    const setPicked = c => { for (const i of picked) lightOpts.mine[i] = c; changed(); };
+    const custom = el('input', { type: 'color', title: 'Any color' });
+    custom.addEventListener('input', () => setPicked(custom.value));
+    const mineBox = el('div', { class: 'mine' },
+      el('div', { class: 'swatches' }, ...SWATCHES.map(c => el('button', { style: `--c:${c}`, title: c, onclick: () => setPicked(c) })),
+        el('button', { class: 'off', title: 'Off', onclick: () => setPicked('#000000') }), custom,
+        el('button', { class: 'btn sm', onclick: () => { picked = new Set(cells.map((_, i) => i)); paint(); } }, 'All pads'),
+        el('button', { class: 'btn sm', onclick: () => { lightOpts.mine = soundColours(); changed(); } }, 'Start from sound colors')),
+      el('small', {}, 'Click a pad above, or hit it on your pad, then pick a color. Shift-click picks more than one.'));
+    const brightIn = el('input', { type: 'range', min: 0.05, max: 1, step: 0.01, value: lightOpts.bright }), brightOut = el('output');
+    brightIn.addEventListener('input', () => { lightOpts.bright = +brightIn.value; changed(); });
+    const brightRow = el('div', { class: 'form-row' }, el('span', {}, 'Brightness'), el('div', { class: 'ctrl' }, brightIn, brightOut));
+    const flashRow = segRow('When you hit', [[true, 'Flash'], [false, 'Nothing']], () => lightOpts.flash, v => { lightOpts.flash = v; });
+    const beatRow = segRow('When the beat plays', [[true, 'Flash'], [false, 'Nothing']], () => lightOpts.beat, v => { lightOpts.beat = v; });
+    const whiteRow = segRow('Flash color', [[false, 'Brighter'], [true, 'White']], () => lightOpts.white, v => { lightOpts.white = v; });
+    const mineRow = el('div', { class: 'form-row' }, el('span', {}), mineBox);
+    const paint = () => {
+      onBtn.setAttribute('aria-pressed', String(lightOpts.on));
+      onBtn.textContent = lightOpts.on ? 'On' : 'Off';
+      status.textContent = lightsText();
+      connectBtn.hidden = !(lightOpts.on && navigator.bluetooth && lights.status === 'nopad' && !btBusy);
+      [modeRow, flashRow, beatRow, whiteRow].forEach(r => r.paint());
+      brightOut.textContent = Math.round(lightOpts.bright * 100) + '%';
+      brightIn.style.setProperty('--p', (lightOpts.bright - 0.05) / 0.95 * 100 + '%');
+      brightRow.hidden = lightOpts.mode === 'own';
+      whiteRow.hidden = lightOpts.mode === 'own' || !(lightOpts.flash || lightOpts.beat);
+      mineRow.hidden = lightOpts.mode !== 'mine';
+      const list = padLightList(), own = lights.own();
+      cells.forEach((c, i) => {
+        const col = lightOpts.mode === 'own' ? own[i] : list[i].base;
+        c.style.setProperty('--c', col || 'transparent');
+        c.classList.toggle('dark', !col || (lightOpts.mode !== 'own' && !list[i].level));
+        c.classList.toggle('sel', lightOpts.mode === 'mine' && picked.has(i));
+      });
+      if (lightOpts.mode === 'mine') { const c = lightOpts.mine[[...picked][0]]; if (c && c !== '#000000') custom.value = c; }
+    };
+    lightsUi = paint;
+    lightPick = i => { if (lightOpts.mode === 'mine') { picked = new Set([i]); paint(); } };
+    openModal(
+      el('div', { class: 'lights-head' }, el('h2', {}, 'Pad lights'), onBtn),
+      el('div', { class: 'lights-status' }, status, connectBtn),
+      el('div', { class: 'form' }, modeRow, el('div', { class: 'form-row' }, el('span', {}, 'Pads'), grid), mineRow, brightRow, flashRow, beatRow, whiteRow),
+      el('small', {}, 'Thump never saves anything to your pad: its own colors come back when Thump closes or the lights are off. Switch presets on the pad (hold SHIFT and press a pad) and the lights follow.'),
+      el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Done')));
+    modalCleanup = () => { lightsUi = () => { }; lightPick = null; };
+    paint();
+  }
   function settingsDialog() {
     const ins = midi ? [...midi.inputs.values()].filter(i => i.state === 'connected').map(i => i.name) : [];
     const lat = Math.round(((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000);
-    const lightsBtn = el('button', { class: 'btn toggle' });
-    const paintLights = () => { lightsBtn.setAttribute('aria-pressed', String(padLights)); lightsBtn.textContent = padLights ? 'On' : 'Off'; $('#lightsState') && ($('#lightsState').textContent = lightsText()); };
-    lightsBtn.onclick = () => {
-      padLights = !padLights; store.set('padLights', padLights);
-      if (!padLights) lights.restore();
-      else if (midi) { lights.attach(null); bindMidi(); renderPads(); }
-      paintLights();
-    };
-    paintLights();
     openModal(el('h2', {}, 'Settings'),
       el('div', { class: 'settings-list' },
-        el('div', { class: 'item' }, el('div', {}, el('b', {}, 'Pad lights'),
-          el('p', {}, 'The pads show their sound\'s color and light up when they play. Your pad\'s own colors come back when Thump closes.'),
-          el('p', { id: 'lightsState' }, lightsText())), lightsBtn),
         el('div', { class: 'item' }, el('div', {}, el('b', {}, 'Sound delay'), el('p', {}, 'Time from a hit to the speakers, before Bluetooth delay.')), el('span', { class: 'mono' }, lat ? lat + ' ms' : 'unknown')),
         el('div', { class: 'item' }, el('div', {}, el('b', {}, 'MIDI inputs'), el('p', {}, ins.length ? ins.join(', ') : 'None connected')))),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Done')));
@@ -2035,7 +2192,6 @@
     ok(hits.length === 4 && hits.every((h, i) => Math.abs(h - [0.1, 0.6, 1.1, 1.6][i]) < 0.03), 'chopper finds the hits: ' + hits.map(h => h.toFixed(2)).join(' '));
     ok(Math.abs(sliceBuffer(hb, 0.6, 1.1).duration - 0.5) < 0.001, 'slice length');
 
-    const fails = out.filter(l => l.startsWith('FAIL')).length;
     // Pad lights: the codec against bytes captured from M-VAVE's editor, then a pretend Pocket
     // that, like the real one, ignores colour writes until its whole memory has been read.
     {
@@ -2045,25 +2201,37 @@
       ok(hx(SMC.toMidi(SMC.write(5, 0x126, [255, 0, 0]))) === 'F0 00 32 09 59 00 00 40 02 26 02 00 00 30 00 00 00 7F 01 00 08 0D F7', 'lights: colour write bytes');
       const reply0 = SMC.parse(SMC.fromMidi([0xF0, 0x00, 0x32, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x01, 0xF7]));
       ok(reply0 && reply0.cmd === 0 && reply0.data.length === 1 && reply0.data[0] === 0, 'lights: decodes the pad\'s OK reply');
+      const sent = [];
+      usbLink({ id: 'x', send: b => sent.push(b) }).send(SMC.packet(0x11, []));
+      ok(hx(sent[0]) === 'F0 00 32 45 00 00 00 40 7F F7', 'lights: USB wraps packets in SysEx');
+      const got = [], join = SMC.joiner(p => got.push(p.cmd)), pk = SMC.packet(0x23, Array.from({ length: 600 }, (_, i) => i & 255));
+      join(pk.slice(0, 3)); join(pk.slice(3, 500)); join([...pk.slice(500), ...SMC.packet(0x00, [0])]); join([9, 9, 9]); join(SMC.packet(0x11, [1]));
+      ok(got.join() === '35,0,17', `lights: joins Bluetooth notifications into packets (${got.join()})`);
+
+      // The pretend pad: preset 1, with pads 1 and 2 of bank 3 swapped in its note layout.
       const mem = new Uint8Array(POCKET.size);
       for (let pr = 0; pr < 4; pr++) for (let r = 0; r < 112; r++) mem.set([0, 9, 4 + r, 0, 127, 250, 250, 0, 255], pr * POCKET.preset + r * 26);
-      let unlocked = false, on = true;
+      mem[32 * 26 + 2] = 37; mem[33 * 26 + 2] = 36;
+      let unlocked = false, on = true, biggest = 0;
       const L = makeLights({ enabled: () => on, key: null });
-      const reply = (cmd, data) => setTimeout(() => L.onSysex(SMC.toMidi(SMC.packet(cmd, data))), 1);
-      L.attach({
-        send(sx) {
-          const q = SMC.parse(SMC.fromMidi(sx));
+      const link = {
+        kind: 'mock', id: 'mock',
+        send(b) {
+          const q = SMC.parse(b);
           if (!q) return;
+          biggest = Math.max(biggest, b.length);
           const d = q.data, a = d[1] | d[2] << 8 | d[3] << 16 | d[4] << 24, n = d[5] | d[6] << 8 | d[7] << 16;
+          const reply = (cmd, data) => setTimeout(() => link.onPacket && link.onPacket(SMC.parse(SMC.packet(cmd, data))), 1);
           if (q.cmd === 0x11) reply(0x11, [...'SMC-PAD Pocket_004'].map(c => c.charCodeAt(0)).concat(Array(9).fill(0)));
           else if (q.cmd === 0x23) {
             if (d[0] === 5 && a + n >= POCKET.size) unlocked = true;
             reply(0x23, [...d.slice(0, 8), ...(d[0] === 4 ? [0xA0, 0, 0x32, 2, 0, 0, 0, 0, 0, 0, 0, 0] : mem.slice(a, a + n))]);
           } else if (q.cmd === 0x22) { if (unlocked) mem.set(d.slice(8, 8 + n), a); reply(0x00, [0]); }
         },
-      });
+      };
       const settle = async () => { await sleep(20); for (let t = 0; t < 300 && L.busy; t++) await sleep(10); };
       const at = (g, i) => [...mem.slice((g * 16 + i) * 26 + 5, (g * 16 + i) * 26 + 8)].join();
+      L.attach(link);
       L.setPads(Array.from({ length: 16 }, (_, i) => ({ base: i < 15 ? '#ff5d5d' : null, level: 0.22 })));
       await settle();
       ok(L.status === 'on' && L.model === 'SMC-PAD Pocket_004', `lights: connects to a pretend Pocket (${L.status})`);
@@ -2076,19 +2244,36 @@
       ok(lit[0] > 200 && lit[1] > idleRed[1], `lights: a hit flashes the pad (${at(2, 0)})`);
       await sleep(150); await settle();
       ok(at(2, 0) === idleRed.join(), 'lights: and it goes back to dim');
-      L.note(52);
+      L.flash(3, 40, true);
+      await sleep(40);
+      ok(at(2, 3) === '250,250,250', `lights: white flashes (${at(2, 3)})`);
+      await sleep(150); await settle();
+      ok(L.padFor(9, 37) === 0 && L.padFor(9, 36) === 1 && L.padFor(9, 39) === 3 && L.padFor(0, 36) === null, 'lights: reads which pad sent a note from the pad\'s own layout');
+      ok(L.padFor(9, 52) === 0 && L.where.group === 3, 'lights: follows the pad to bank 4');
       await settle();
-      ok(L.where.group === 3 && at(3, 0) === idleRed.join(), 'lights: follows the pad to bank 4');
-      L.restoreNow();
-      await sleep(20);
-      ok(at(2, 0) === '250,250,0' && at(3, 0) === '250,250,0' && at(2, 7) === '250,250,0', 'lights: closing Thump puts the pad\'s colours back in one message');
-      L.setPads(Array.from({ length: 16 }, () => ({ base: '#2ee6c0', level: 0.22 })));
+      ok(at(3, 0) === idleRed.join(), 'lights: and lights that bank');
+      L.setPads(Array.from({ length: 16 }, () => ({ own: true, level: 1 })));
       await settle();
+      ok(at(3, 0) === '250,250,0' && L.own()[0] === '#fafa00', 'lights: "pad\'s own" shows the pad\'s colours');
+      const teal = () => L.setPads(Array.from({ length: 16 }, () => ({ base: '#2ee6c0', level: 0.22 })));
+      teal(); await settle();
       on = false; L.restore();
       await settle();
       ok(at(2, 0) === '250,250,0' && at(2, 15) === '250,250,0' && at(3, 0) === '250,250,0', 'lights: turning them off puts the pad\'s colours back');
+      on = true; teal(); await settle();
+      L.restoreNow();
+      await sleep(20);
+      ok(at(2, 0) === '250,250,0' && at(3, 0) === '250,250,0' && at(2, 7) === '250,250,0', 'lights: closing Thump puts the pad\'s colours back in one message');
+      L.attach(null); link.kind = 'bt'; L.attach(link); // a new session, now over Bluetooth
+      teal(); await settle();
+      L.padFor(9, 36); await settle(); // bank 3 as well, so the restore spans 32 pads
+      ok(at(2, 1) !== '250,250,0' && at(3, 0) !== '250,250,0', 'lights: a new session finds the pad\'s colours again');
+      biggest = 0; L.restoreNow();
+      await sleep(20);
+      ok(biggest > 0 && biggest <= 512 && at(2, 0) === '250,250,0' && at(3, 0) === '250,250,0', `lights: over Bluetooth the restore fits 512-byte writes (${biggest})`);
       L.attach(null);
     }
+    const fails = out.filter(l => l.startsWith('FAIL')).length;
     const pre = $('#selftest');
     pre.hidden = false;
     pre.textContent = `SELFTEST ${fails ? 'FAIL' : 'PASS'} (${out.length - fails}/${out.length})\n` + out.join('\n');
@@ -2101,6 +2286,7 @@
     $('#kitSel').onchange = e => loadPreset(e.target.value);
     $('#helpBtn').onclick = showHelp;
     $('#settingsBtn').onclick = settingsDialog;
+    $('#lightsBtn').onclick = lightsDialog;
     $('#exportBtn').onclick = exportDialog;
     $('#browserClose').onclick = closeBrowser;
     $('#search').addEventListener('input', () => renderBrowser());
@@ -2140,6 +2326,6 @@
     if (!store.get('seenHelp2', false)) { store.set('seenHelp2', true); showHelp(); }
   }
   // Test hooks for tools/cdp.mjs.
-  window.thump = { lights, makeLights, SMC, get state() { return state; }, seq, play, stop, padDown, padUp, renderAll, chopDialog, wobbleDialog, micDialog, exportDialog, settingsDialog, toggleMute, choosePattern, copyToNext };
+  window.thump = { lights, makeLights, SMC, lightOpts, lightsDialog, connectBt, chooseLink, get state() { return state; }, seq, play, stop, padDown, padUp, renderAll, chopDialog, wobbleDialog, micDialog, exportDialog, settingsDialog, toggleMute, choosePattern, copyToNext };
   init();
 })();
